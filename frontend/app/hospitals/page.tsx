@@ -3,33 +3,60 @@
 import { useState, useEffect } from 'react';
 import { MapPin, Phone, AlertTriangle, Building2, Ambulance, ChevronDown, ExternalLink, Clock, RefreshCw } from 'lucide-react';
 import { api, HospitalData, Patient, RiskAssessment } from '@/lib/api';
+import dynamic from 'next/dynamic';
 
 interface HighRiskPatient {
   patient: Patient;
   assessment: RiskAssessment;
 }
 
-const CITY_COORDS: Record<string, [number, number]> = {
-  'Kuala Lumpur': [3.1390, 101.6869], 'Petaling Jaya': [3.1073, 101.6067],
-  'Shah Alam': [3.0738, 101.5183],    'Subang Jaya': [3.0497, 101.5851],
-  'Klang': [3.0449, 101.4459],        'Johor Bahru': [1.4927, 103.7414],
-  'Ipoh': [4.5975, 101.0901],         'Penang': [5.4141, 100.3288],
-  'George Town': [5.4141, 100.3288],  'Kota Bharu': [6.1248, 102.2381],
-  'Kuching': [1.5533, 110.3592],      'Kota Kinabalu': [5.9804, 116.0735],
-  'Alor Setar': [6.1248, 100.3673],   'Seremban': [2.7260, 101.9424],
-  'Melaka': [2.1896, 102.2501],       'Kuantan': [3.8077, 103.3260],
-  'Putrajaya': [2.9264, 101.6964],    'Cyberjaya': [2.9213, 101.6559],
-};
+const HospitalMap = dynamic(() => import('@/components/HospitalMap'), { ssr: false });
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(name + '='));
+  return match ? decodeURIComponent(match.split('=')[1]) : null;
+}
 
 export default function HospitalsPage() {
+  // Role detection
+  const [isPatient, setIsPatient] = useState(false);
+  const [myPatientId, setMyPatientId] = useState<string | null>(null);
+
+  // Admin-only state
   const [highRiskPatients, setHighRiskPatients] = useState<HighRiskPatient[]>([]);
   const [allPatients, setAllPatients] = useState<Patient[]>([]);
   const [selectedPatientId, setSelectedPatientId] = useState('');
+
+  // Shared state
   const [hospitalData, setHospitalData] = useState<HospitalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [hospitalLoading, setHospitalLoading] = useState(false);
 
-  const loadData = async () => {
+  // Detect role on mount
+  useEffect(() => {
+    const pid = readCookie('cs_patient_id');
+    if (pid) {
+      setIsPatient(true);
+      setMyPatientId(pid);
+    }
+  }, []);
+
+  // Patient mode: load hospitals for own location automatically
+  useEffect(() => {
+    if (!isPatient || !myPatientId) return;
+    setLoading(false);
+    setHospitalLoading(true);
+    setHospitalData(null);
+    api.getHospitals(myPatientId)
+      .then(setHospitalData)
+      .catch(console.error)
+      .finally(() => setHospitalLoading(false));
+  }, [isPatient, myPatientId]);
+
+  // Admin mode: load all patients + high-risk list
+  const loadAdminData = async () => {
+    if (isPatient) return;
     setLoading(true);
     try {
       const [patients, assessments] = await Promise.all([
@@ -38,7 +65,6 @@ export default function HospitalsPage() {
       ]);
       setAllPatients(patients);
 
-      // Find distinct high-risk patients from recent assessments
       const seen = new Set<string>();
       const highRisk: HighRiskPatient[] = [];
       for (const a of assessments) {
@@ -53,7 +79,6 @@ export default function HospitalsPage() {
       }
       setHighRiskPatients(highRisk);
 
-      // Default select: first high-risk patient, or first patient overall
       const defaultId = highRisk[0]?.patient.id || patients[0]?.id || '';
       setSelectedPatientId(defaultId);
     } finally {
@@ -61,21 +86,147 @@ export default function HospitalsPage() {
     }
   };
 
-  useEffect(() => { loadData(); }, []);
-
   useEffect(() => {
-    if (!selectedPatientId) return;
+    if (!isPatient) loadAdminData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPatient]);
+
+  // Admin: load hospital data when selected patient changes
+  useEffect(() => {
+    if (isPatient || !selectedPatientId) return;
     setHospitalLoading(true);
     setHospitalData(null);
     api.getHospitals(selectedPatientId)
       .then(setHospitalData)
       .catch(console.error)
       .finally(() => setHospitalLoading(false));
-  }, [selectedPatientId]);
+  }, [isPatient, selectedPatientId]);
 
   const selectedPatient = allPatients.find((p) => p.id === selectedPatientId);
   const selectedRisk    = highRiskPatients.find((r) => r.patient.id === selectedPatientId);
+  const mapCenter: [number, number] = hospitalData?.patientLocation?.lat && hospitalData?.patientLocation?.lng
+    ? [hospitalData.patientLocation.lat, hospitalData.patientLocation.lng]
+    : hospitalData?.hospitals?.[0]?.lat && hospitalData?.hospitals?.[0]?.lng
+      ? [hospitalData.hospitals[0].lat, hospitalData.hospitals[0].lng]
+      : [3.1390, 101.6869];
 
+  // ── PATIENT VIEW ─────────────────────────────────────────────────────────────
+  if (isPatient) {
+    return (
+      <div className="space-y-5 animate-fade-in max-w-2xl mx-auto">
+
+        {/* Header */}
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+            <Ambulance className="w-6 h-6 text-red-500" />
+            Nearby Hospitals
+          </h1>
+          <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
+            Hospitals near your location — ready to help you anytime
+          </p>
+        </div>
+
+        {/* Emergency banner */}
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-4 flex items-center gap-4">
+          <div className="w-12 h-12 rounded-xl bg-red-100 dark:bg-red-900/40 flex items-center justify-center shrink-0">
+            <Phone className="w-6 h-6 text-red-600" />
+          </div>
+          <div className="flex-1">
+            <p className="text-base font-bold text-red-700 dark:text-red-400">Emergency: Call 999</p>
+            <p className="text-sm text-red-600/80 dark:text-red-400/80">For life-threatening emergencies, call immediately</p>
+          </div>
+          <a href="tel:999"
+            className="shrink-0 px-5 py-3 bg-red-600 text-white text-sm font-bold rounded-xl hover:bg-red-700 transition-colors">
+            Call 999
+          </a>
+        </div>
+
+        {hospitalLoading ? (
+          <div className="text-center py-16 text-slate-400 text-lg">Finding hospitals near you…</div>
+        ) : hospitalData ? (
+          <>
+            {/* Recommended banner */}
+            <div className="bg-teal-50 dark:bg-teal-900/20 border border-teal-200 dark:border-teal-700 rounded-2xl p-4">
+              <p className="text-sm font-bold text-teal-700 dark:text-teal-400">
+                ✓ Recommended: {hospitalData.recommendedHospital}
+              </p>
+              <p className="text-sm text-teal-600/80 dark:text-teal-400/80 mt-0.5">
+                Estimated travel time: {hospitalData.estimatedTravelTime}
+              </p>
+            </div>
+
+            {/* Hospital cards — patient-safe, no other patient data */}
+            <div className="space-y-3">
+              {hospitalData.hospitals.map((hospital, idx) => (
+                <div key={hospital.id} className={`bg-white dark:bg-slate-800 rounded-2xl border shadow-sm p-5 ${
+                  idx === 0 ? 'border-teal-300 dark:border-teal-700' : 'border-slate-200 dark:border-slate-700'
+                }`}>
+                  <div className="flex items-start justify-between gap-2 mb-3">
+                    <div>
+                      {idx === 0 && (
+                        <span className="text-xs font-bold bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400 border border-teal-200 dark:border-teal-700 px-2.5 py-1 rounded-full mb-2 inline-block">
+                          ⭐ Nearest &amp; Recommended
+                        </span>
+                      )}
+                      <p className="text-base font-bold text-slate-900 dark:text-slate-100">{hospital.name}</p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">{hospital.address}, {hospital.city}</p>
+                    </div>
+                    {hospital.emergencyAvailable && (
+                      <span className="text-xs font-bold bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800 px-2.5 py-1 rounded-full shrink-0">
+                        24h A&amp;E
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-slate-400 mb-4">
+                    <span className="flex items-center gap-1.5">
+                      <MapPin className="w-4 h-4 text-teal-500" /> {hospital.distance}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-brand-500" /> {hospital.type}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-3">
+                    <a href={`tel:${hospital.phone}`}
+                      className="flex-1 flex items-center justify-center gap-2 py-3 bg-teal-600 text-white rounded-xl text-sm font-semibold hover:bg-teal-700 transition-colors">
+                      <Phone className="w-4 h-4" /> Call {hospital.phone}
+                    </a>
+                    <a
+                      href={`https://www.google.com/maps/search/${encodeURIComponent(hospital.name + ' ' + hospital.city)}`}
+                      target="_blank" rel="noopener noreferrer"
+                      className="px-4 py-3 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-slate-500 hover:text-brand-600 transition-colors flex items-center gap-1.5 text-sm font-medium">
+                      <ExternalLink className="w-4 h-4" /> Map
+                    </a>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden shadow-sm">
+              <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-brand-500" />
+                  Hospitals near {hospitalData.patientCity}
+                </p>
+                <a
+                  href={`https://www.openstreetmap.org/search?query=hospital+${encodeURIComponent(hospitalData.patientCity + ' Malaysia')}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-brand-600 hover:underline flex items-center gap-1">
+                  Open map <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+              <div className="h-80">
+                <HospitalMap hospitals={hospitalData.hospitals} center={mapCenter} />
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
+  // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-5 animate-fade-in">
 
@@ -90,7 +241,7 @@ export default function HospitalsPage() {
             Identify the nearest hospital for high-risk patients — pre-loaded with patient medical summary
           </p>
         </div>
-        <button onClick={loadData} className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 transition-colors">
+        <button onClick={loadAdminData} className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 transition-colors">
           <RefreshCw className="w-4 h-4" />
         </button>
       </div>
@@ -102,7 +253,6 @@ export default function HospitalsPage() {
 
           {/* Left: High-risk patient list */}
           <div className="space-y-3">
-            {/* High-risk patients */}
             {highRiskPatients.length > 0 && (
               <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
                 <div className="px-4 py-3 bg-red-50 dark:bg-red-900/20 border-b border-red-200 dark:border-red-800">
@@ -258,36 +408,23 @@ export default function HospitalsPage() {
                   ))}
                 </div>
 
-                {/* Map */}
-                {(() => {
-                  const coords = CITY_COORDS[hospitalData.patientCity] || [3.1390, 101.6869];
-                  const [lat, lng] = coords;
-                  const delta = 0.05;
-                  const bbox = `${lng - delta},${lat - delta},${lng + delta},${lat + delta}`;
-                  return (
-                    <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
-                      <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
-                        <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                          <Building2 className="w-3.5 h-3.5 text-brand-500" />
-                          Hospitals near {hospitalData.patientCity}
-                        </p>
-                        <a
-                          href={`https://www.openstreetmap.org/search?query=hospital+${encodeURIComponent(hospitalData.patientCity + ' Malaysia')}`}
-                          target="_blank" rel="noopener noreferrer"
-                          className="text-[11px] text-brand-600 hover:underline flex items-center gap-1">
-                          Open full map <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </div>
-                      <iframe
-                        src={`https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${lat},${lng}`}
-                        width="100%" height="300"
-                        style={{ border: 'none', display: 'block' }}
-                        title={`Map of ${hospitalData.patientCity}`}
-                        loading="lazy"
-                      />
-                    </div>
-                  );
-                })()}
+                <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                      <Building2 className="w-3.5 h-3.5 text-brand-500" />
+                      Hospitals near {hospitalData.patientCity}
+                    </p>
+                    <a
+                      href={`https://www.openstreetmap.org/search?query=hospital+${encodeURIComponent(hospitalData.patientCity + ' Malaysia')}`}
+                      target="_blank" rel="noopener noreferrer"
+                      className="text-[11px] text-brand-600 hover:underline flex items-center gap-1">
+                      Open full map <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <div className="h-72">
+                    <HospitalMap hospitals={hospitalData.hospitals} center={mapCenter} />
+                  </div>
+                </div>
               </>
             ) : null}
           </div>

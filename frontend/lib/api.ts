@@ -37,6 +37,36 @@ export interface Patient {
   medications: string[];
   caregiver: { name: string; phone: string; email: string; relationship: string };
   location: { address: string; city: string; state: string; lat?: number; lng?: number };
+  // Gamification
+  carePoints?: number;
+  streakDays?: number;
+  level?: number;
+  // Social
+  nudges?: Array<{ type: 'heart' | 'highfive' | 'support'; sender: string; timestamp: string }>;
+}
+
+export interface DeviceStatus {
+  deviceId: string;
+  patientId: string;
+  deviceType: string;
+  model: string;
+  patient: Patient | undefined;
+  lastSeen: string | null;
+  readingCount: number;
+  status: 'online' | 'idle' | 'never_connected';
+}
+
+export interface DeviceReadingResult {
+  deviceId: string;
+  deviceType: string;
+  model: string;
+  patientName: string;
+  readingReceived: HealthReading;
+  assessment: RiskAssessment;
+  anomalies: string[];
+  agentActionsTriggered: boolean;
+  agentActions: unknown;
+  processedAt: string;
 }
 
 export interface HealthReading {
@@ -149,6 +179,8 @@ export interface Hospital {
   distance: string;
   type: string;
   emergencyAvailable: boolean;
+  lat?: number;
+  lng?: number;
 }
 
 export interface HospitalData {
@@ -158,6 +190,7 @@ export interface HospitalData {
   emergencyContact: string;
   patientCity: string;
   patientState: string;
+  patientLocation?: { lat?: number; lng?: number };
 }
 
 export interface WeeklyReport {
@@ -218,6 +251,8 @@ export const api = {
   // Patients
   getPatients: () => request<Patient[]>('/api/health/patients'),
   getPatient: (id: string) => request<Patient>(`/api/health/patients/${id}`),
+  updatePatient: (id: string, updates: Partial<Pick<Patient, 'name' | 'age' | 'gender' | 'location' | 'caregiver'>>) =>
+    request<Patient>(`/api/health/patients/${id}`, { method: 'PATCH', body: JSON.stringify(updates) }),
   getReadings: (patientId: string, limit = 10) =>
     request<HealthReading[]>(`/api/health/patients/${patientId}/readings?limit=${limit}`),
   getAssessments: (patientId: string, limit = 5) =>
@@ -295,11 +330,50 @@ export const api = {
       body: JSON.stringify({ count, scenario }),
     }),
 
+  // Devices
+  getDevices: () => request<DeviceStatus[]>('/api/devices'),
+  sendDeviceReading: (deviceId: string, reading: Partial<{
+    heartRate: number; oxygenSaturation: number; temperature: number;
+    bloodPressure: { systolic: number; diastolic: number };
+    sleepHours: number; movementScore: number; glucoseLevel: number;
+  }>) =>
+    request<DeviceReadingResult>(`/api/devices/${deviceId}/reading`, {
+      method: 'POST', body: JSON.stringify(reading),
+    }),
+
+  // Authentication
+  signupPatient: (data: { username: string; fullName: string; password: string }) =>
+    request<{ patientId: string; patientName: string; token: string }>(
+      '/api/auth/signup',
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
+  loginPatient: (data: { username: string; password: string }) =>
+    request<{ patientId: string; patientName: string; token: string; username: string }>(
+      '/api/auth/login',
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
+  verifyToken: (token: string) =>
+    request<{ valid: boolean }>('/api/auth/verify', {
+      headers: { Authorization: `Bearer ${token}` },
+    }),
+
+  // Social / Gamification
+  sendNudge: (patientId: string, type: 'heart' | 'highfive' | 'support', sender: string) =>
+    request<{ success: boolean }>(`/api/health/patients/${patientId}/nudge`, {
+      method: 'POST',
+      body: JSON.stringify({ type, sender }),
+    }),
+  awardPoints: (patientId: string, points: number) =>
+    request<{ success: boolean }>(`/api/health/patients/${patientId}/points`, {
+      method: 'POST',
+      body: JSON.stringify({ points }),
+    }),
+
   // Companion
-  chat: (patientId: string, message: string, sessionType?: string, language?: 'en' | 'bm') =>
+  chat: (patientId: string, message: string, sessionType?: string, language?: 'en' | 'bm', callerType?: 'patient' | 'doctor') =>
     request<CompanionResponse>('/api/companion/chat', {
       method: 'POST',
-      body: JSON.stringify({ patientId, message, sessionType, language }),
+      body: JSON.stringify({ patientId, message, sessionType, language, callerType }),
     }),
   getChatHistory: (patientId: string) =>
     request<Array<{ id: string; role: string; content: string; timestamp: string }>>(

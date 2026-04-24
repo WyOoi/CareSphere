@@ -7,8 +7,45 @@ import { findNearbyHospitals } from '../tools/hospitalFinderTool';
 import { sendCaregiverAlert } from '../tools/caregiverAlertTool';
 import { HealthReading } from '../types/health.types';
 import { v4 as uuidv4 } from 'uuid';
+import { db } from '../lib/firebase';
 
 const router = Router();
+
+type FirestoreLikeTimestamp = {
+  toDate?: () => Date;
+  _seconds?: number;
+  seconds?: number;
+  _nanoseconds?: number;
+  nanoseconds?: number;
+};
+
+function toDate(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof value === 'object') {
+    const ts = value as FirestoreLikeTimestamp;
+    if (typeof ts.toDate === 'function') {
+      const d = ts.toDate();
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const seconds = ts._seconds ?? ts.seconds;
+    const nanos = ts._nanoseconds ?? ts.nanoseconds ?? 0;
+    if (typeof seconds === 'number') {
+      const d = new Date(seconds * 1000 + Math.floor(nanos / 1e6));
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+  }
+  return null;
+}
+
+function toIso(value: unknown): string {
+  const d = toDate(value);
+  return d ? d.toISOString() : new Date(0).toISOString();
+}
 
 // ─── PATIENTS ───────────────────────────────────────────────────────────────
 
@@ -80,6 +117,29 @@ router.get('/patients/:id', (req: Request, res: Response) => {
   const patient = healthMemory.getPatient(req.params.id);
   if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
   res.json({ success: true, data: patient });
+});
+
+// ─── UPDATE PATIENT (Patient self-edit biodata) ──────────────────────────────
+router.patch('/patients/:id', (req: Request, res: Response) => {
+  try {
+    const patient = healthMemory.getPatient(req.params.id);
+    if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
+
+    const { name, age, gender, location, caregiver } = req.body;
+    const updated = {
+      ...patient,
+      ...(name       && { name: String(name).trim() }),
+      ...(age        && { age: parseInt(age) }),
+      ...(gender     && { gender }),
+      ...(location   && { location: { ...patient.location, ...location } }),
+      ...(caregiver  && { caregiver: { ...patient.caregiver, ...caregiver } }),
+    };
+    healthMemory.storePatient(updated);
+    console.log(`[healthRoutes] Patient updated: ${updated.name} (${req.params.id})`);
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
 });
 
 router.get('/patients/:id/readings', (req: Request, res: Response) => {
@@ -189,6 +249,62 @@ router.post('/patients/:id/medications/log', (req: Request, res: Response) => {
   res.json({ success: true, data: log });
 });
 
+// ─── SOCIAL / GAMIFICATION ────────────────────────────────────────────────────
+
+router.post('/patients/:id/nudge', (req: Request, res: Response) => {
+  try {
+    const patient = healthMemory.getPatient(req.params.id);
+    if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
+
+    const { type, sender } = req.body as { type?: 'heart' | 'highfive' | 'support'; sender?: string };
+    const validTypes = new Set(['heart', 'highfive', 'support']);
+    if (!type || !validTypes.has(type)) {
+      return res.status(400).json({ success: false, error: 'Invalid nudge type' });
+    }
+
+    const nudges = Array.isArray(patient.nudges) ? [...patient.nudges] : [];
+    nudges.push({
+      type,
+      sender: sender?.trim() || 'Care Team',
+      timestamp: new Date().toISOString(),
+    });
+
+    const updated = { ...patient, nudges };
+    healthMemory.storePatient(updated);
+    res.json({ success: true, data: { success: true, nudgesCount: nudges.length } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+router.post('/patients/:id/points', (req: Request, res: Response) => {
+  try {
+    const patient = healthMemory.getPatient(req.params.id);
+    if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
+
+    const pointsInput = Number(req.body?.points ?? 0);
+    if (!Number.isFinite(pointsInput) || pointsInput <= 0) {
+      return res.status(400).json({ success: false, error: 'points must be a positive number' });
+    }
+
+    const currentPoints = Number(patient.carePoints ?? 0);
+    const nextPoints = currentPoints + Math.round(pointsInput);
+    const nextLevel = Math.max(1, Math.floor(nextPoints / 100) + 1);
+    const nextStreak = Number(patient.streakDays ?? 0) + 1;
+
+    const updated = {
+      ...patient,
+      carePoints: nextPoints,
+      level: nextLevel,
+      streakDays: nextStreak,
+    };
+    healthMemory.storePatient(updated);
+    res.json({ success: true, data: { success: true, carePoints: nextPoints, level: nextLevel, streakDays: nextStreak } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ─── HOSPITALS ───────────────────────────────────────────────────────────────
 
 router.get('/patients/:id/hospitals', async (req: Request, res: Response) => {
@@ -197,7 +313,18 @@ router.get('/patients/:id/hospitals', async (req: Request, res: Response) => {
     if (!patient) return res.status(404).json({ success: false, error: 'Patient not found' });
 
     const result = await findNearbyHospitals({ patientId: req.params.id, urgency: 'medium' });
-    res.json({ success: true, data: { ...result, patientCity: patient.location.city, patientState: patient.location.state } });
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        patientCity: patient.location.city,
+        patientState: patient.location.state,
+        patientLocation: {
+          lat: patient.location.lat,
+          lng: patient.location.lng,
+        },
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }
@@ -620,87 +747,109 @@ router.post('/alerts/test', async (req: Request, res: Response) => {
 
 // ─── ADMIN: ANALYTICS ────────────────────────────────────────────────────────
 
-router.get('/admin/analytics', (_req: Request, res: Response) => {
-  const allPatients   = healthMemory.getAllPatients();
-  const allAssessments = healthMemory.getAllAssessments();
+router.get('/admin/analytics', async (_req: Request, res: Response) => {
+  try {
+    if (!db) return res.status(503).json({ success: false, error: 'Firestore unavailable' });
 
-  const today     = new Date().toISOString().split('T')[0];
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  const weekAgo   = new Date(Date.now() - 7 * 86400000).toISOString();
+    const [patientsSnap, assessmentsSnap, medLogsSnap, convsSnap] = await Promise.all([
+      db.collection('patients').get(),
+      db.collectionGroup('assessments').get(),
+      db.collectionGroup('medicationLogs').get(),
+      db.collectionGroup('conversations').get(),
+    ]);
 
-  const todayAssessments     = allAssessments.filter((a) => a.timestamp.startsWith(today));
-  const yesterdayAssessments = allAssessments.filter((a) => a.timestamp.startsWith(yesterday));
-  const weekAssessments      = allAssessments.filter((a) => a.timestamp >= weekAgo);
+    const allAssessments = assessmentsSnap.docs.map((d) => d.data() as any);
+    const allMedicationLogs = medLogsSnap.docs.map((d) => d.data() as any);
+    const allQueryMessages = convsSnap.docs.reduce((count, d) => {
+      const msg = d.data() as any;
+      return count + (msg.role === 'user' ? 1 : 0);
+    }, 0);
 
-  // Adherence average across all patients that have medication data
-  let totalAdherence = 0, adherenceCount = 0;
-  for (const p of allPatients) {
-    const adh = healthMemory.getMedicationAdherence(p.id);
-    if (adh.total > 0) { totalAdherence += adh.rate; adherenceCount++; }
+    const today = new Date().toISOString().split('T')[0];
+    const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 86400000).getTime();
+
+    const todayAssessments = allAssessments.filter((a) => toIso(a.timestamp).startsWith(today));
+    const yesterdayAssessments = allAssessments.filter((a) => toIso(a.timestamp).startsWith(yesterday));
+    const weekAssessments = allAssessments.filter((a) => {
+      const t = toDate(a.timestamp);
+      return t ? t.getTime() >= weekAgo : false;
+    });
+
+    const monitoredPatientIds = new Set(allAssessments.map((a) => String(a.patientId)));
+
+    const medByPatient = new Map<string, { total: number; taken: number }>();
+    for (const log of allMedicationLogs) {
+      const pid = String(log.patientId || '');
+      if (!pid) continue;
+      const prev = medByPatient.get(pid) || { total: 0, taken: 0 };
+      prev.total += 1;
+      if (Boolean(log.taken)) prev.taken += 1;
+      medByPatient.set(pid, prev);
+    }
+    let totalAdherence = 0;
+    let adherenceCount = 0;
+    for (const [, entry] of medByPatient) {
+      if (entry.total > 0) {
+        totalAdherence += Math.round((entry.taken / entry.total) * 100);
+        adherenceCount += 1;
+      }
+    }
+    const avgAdherence = adherenceCount > 0 ? Math.round(totalAdherence / adherenceCount) : 0;
+
+    const analytics = {
+      patients: {
+        total: patientsSnap.size,
+        monitored: monitoredPatientIds.size,
+        unmonitored: Math.max(0, patientsSnap.size - monitoredPatientIds.size),
+      },
+      risk: {
+        high: allAssessments.filter((a) => a.riskLevel === 'high').length,
+        medium: allAssessments.filter((a) => a.riskLevel === 'medium').length,
+        low: allAssessments.filter((a) => a.riskLevel === 'low').length,
+        highToday: todayAssessments.filter((a) => a.riskLevel === 'high').length,
+        mediumToday: todayAssessments.filter((a) => a.riskLevel === 'medium').length,
+      },
+      assessments: {
+        total: allAssessments.length,
+        today: todayAssessments.length,
+        yesterday: yesterdayAssessments.length,
+        thisWeek: weekAssessments.length,
+      },
+      alerts: {
+        total: allAssessments.filter((a) => a.riskLevel === 'high' || a.riskLevel === 'medium').length,
+        today: todayAssessments.filter((a) => a.riskLevel === 'high' || a.riskLevel === 'medium').length,
+        critical: allAssessments.filter((a) => a.riskLevel === 'high').length,
+      },
+      medications: {
+        avgAdherence,
+        patientsTracked: adherenceCount,
+      },
+      aiQueries: {
+        total: allQueryMessages,
+      },
+      system: {
+        autoSimEnabled,
+        batchSize: AUTO_SIM_BATCH_SIZE,
+        intervalMs: AUTO_SIM_INTERVAL_MS,
+        uptime: process.uptime(),
+      },
+      generatedAt: new Date().toISOString(),
+    };
+
+    res.json({ success: true, data: analytics });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
   }
-  const avgAdherence = adherenceCount > 0 ? Math.round(totalAdherence / adherenceCount) : 0;
-
-  // AI clinical queries = total conversation messages across all patients
-  let totalAIQueries = 0;
-  for (const p of allPatients) {
-    const history = healthMemory.getConversationHistory(p.id, 1000);
-    totalAIQueries += history ? history.filter((m) => m.role === 'user').length : 0;
-  }
-
-  // Patients monitored (have ≥1 assessment)
-  const monitoredPatientIds = new Set(allAssessments.map((a) => a.patientId));
-
-  const analytics = {
-    patients: {
-      total:       allPatients.length,
-      monitored:   monitoredPatientIds.size,
-      unmonitored: allPatients.length - monitoredPatientIds.size,
-    },
-    risk: {
-      high:   allAssessments.filter((a) => a.riskLevel === 'high').length,
-      medium: allAssessments.filter((a) => a.riskLevel === 'medium').length,
-      low:    allAssessments.filter((a) => a.riskLevel === 'low').length,
-      highToday:   todayAssessments.filter((a) => a.riskLevel === 'high').length,
-      mediumToday: todayAssessments.filter((a) => a.riskLevel === 'medium').length,
-    },
-    assessments: {
-      total:     allAssessments.length,
-      today:     todayAssessments.length,
-      yesterday: yesterdayAssessments.length,
-      thisWeek:  weekAssessments.length,
-    },
-    alerts: {
-      total:   allAssessments.filter((a) => a.riskLevel === 'high' || a.riskLevel === 'medium').length,
-      today:   todayAssessments.filter((a) => a.riskLevel === 'high' || a.riskLevel === 'medium').length,
-      critical: allAssessments.filter((a) => a.riskLevel === 'high').length,
-    },
-    medications: {
-      avgAdherence,
-      patientsTracked: adherenceCount,
-    },
-    aiQueries: {
-      total: totalAIQueries,
-    },
-    system: {
-      autoSimEnabled,
-      batchSize: AUTO_SIM_BATCH_SIZE,
-      intervalMs: AUTO_SIM_INTERVAL_MS,
-      uptime: process.uptime(),
-    },
-    generatedAt: new Date().toISOString(),
-  };
-
-  res.json({ success: true, data: analytics });
 });
 
 // ─── ADMIN: AUDIT LOG ────────────────────────────────────────────────────────
 
-router.get('/admin/audit', (req: Request, res: Response) => {
-  const limit  = Math.min(parseInt((req.query.limit as string) || '100', 10), 500);
-  const type   = req.query.type as string | undefined;
+router.get('/admin/audit', async (req: Request, res: Response) => {
+  const limit = Math.min(parseInt((req.query.limit as string) || '100', 10), 500);
+  const type = req.query.type as string | undefined;
 
-  const allAssessments = healthMemory.getAllAssessments();
-  const allPatients    = healthMemory.getAllPatients();
+  if (!db) return res.status(503).json({ success: false, error: 'Firestore unavailable' });
 
   type AuditEvent = {
     id: string;
@@ -713,80 +862,91 @@ router.get('/admin/audit', (req: Request, res: Response) => {
     metadata?: Record<string, unknown>;
   };
 
-  const events: AuditEvent[] = [];
+  try {
+    const [patientsSnap, assessmentsSnap, convsSnap] = await Promise.all([
+      db.collection('patients').get(),
+      db.collectionGroup('assessments').get(),
+      db.collectionGroup('conversations').get(),
+    ]);
 
-  // Risk assessments → audit events
-  for (const a of allAssessments) {
-    const patient = healthMemory.getPatient(a.patientId);
-    const name    = patient?.name ?? a.patientId;
-
-    events.push({
-      id: `assess-${a.id}`,
-      timestamp: a.timestamp,
-      type: 'risk_assessment',
-      patientId: a.patientId,
-      patientName: name,
-      severity: a.riskLevel === 'high' ? 'critical' : a.riskLevel === 'medium' ? 'warning' : 'info',
-      description: `Risk assessment: ${a.riskLevel.toUpperCase()} (score ${a.riskScore}/100) — ${a.geminiReasoning.substring(0, 100)}`,
-      metadata: { riskLevel: a.riskLevel, riskScore: a.riskScore, reasons: a.reasons },
-    });
-
-    // High/medium → caregiver alert event
-    if (a.riskLevel === 'high' || a.riskLevel === 'medium') {
-      events.push({
-        id: `alert-${a.id}`,
-        timestamp: a.timestamp,
-        type: 'caregiver_alert',
-        patientId: a.patientId,
-        patientName: name,
-        severity: a.riskLevel === 'high' ? 'critical' : 'warning',
-        description: `Caregiver alert dispatched (SMS + Email) for ${name} — ${a.riskLevel} risk detected`,
-        metadata: { caregiver: patient?.caregiver, riskLevel: a.riskLevel },
-      });
+    const patientById = new Map<string, any>();
+    for (const p of patientsSnap.docs) {
+      patientById.set(p.id, p.data());
     }
-  }
 
-  // AI clinical queries → audit events
-  for (const p of allPatients) {
-    const history = healthMemory.getConversationHistory(p.id, 50);
-    if (!history) continue;
-    for (const msg of history) {
-      if (msg.role !== 'user') continue;
+    const events: AuditEvent[] = [];
+
+    for (const doc of assessmentsSnap.docs) {
+      const a = doc.data() as any;
+      const patient = patientById.get(String(a.patientId));
+      const name = patient?.name ?? String(a.patientId);
+      const ts = toIso(a.timestamp);
+
       events.push({
-        id: `query-${msg.id}`,
-        timestamp: msg.timestamp,
+        id: `assess-${a.id || doc.id}`,
+        timestamp: ts,
+        type: 'risk_assessment',
+        patientId: String(a.patientId),
+        patientName: name,
+        severity: a.riskLevel === 'high' ? 'critical' : a.riskLevel === 'medium' ? 'warning' : 'info',
+        description: `Risk assessment: ${String(a.riskLevel || '').toUpperCase()} (score ${a.riskScore}/100) — ${String(a.geminiReasoning || '').substring(0, 100)}`,
+        metadata: { riskLevel: a.riskLevel, riskScore: a.riskScore, reasons: a.reasons },
+      });
+
+      if (a.riskLevel === 'high' || a.riskLevel === 'medium') {
+        events.push({
+          id: `alert-${a.id || doc.id}`,
+          timestamp: ts,
+          type: 'caregiver_alert',
+          patientId: String(a.patientId),
+          patientName: name,
+          severity: a.riskLevel === 'high' ? 'critical' : 'warning',
+          description: `Caregiver alert dispatched (SMS + Email) for ${name} — ${a.riskLevel} risk detected`,
+          metadata: { caregiver: patient?.caregiver, riskLevel: a.riskLevel },
+        });
+      }
+    }
+
+    for (const doc of convsSnap.docs) {
+      const msg = doc.data() as any;
+      if (msg.role !== 'user') continue;
+      const patient = patientById.get(String(msg.patientId));
+      events.push({
+        id: `query-${msg.id || doc.id}`,
+        timestamp: toIso(msg.timestamp),
         type: 'ai_query',
-        patientId: p.id,
-        patientName: p.name,
+        patientId: String(msg.patientId),
+        patientName: patient?.name ?? String(msg.patientId),
         severity: 'info',
-        description: `Clinical query: "${msg.content.substring(0, 100)}"`,
+        description: `Clinical query: "${String(msg.content || '').substring(0, 100)}"`,
         metadata: { query: msg.content },
       });
     }
-  }
 
-  // Patient registrations
-  for (const p of allPatients) {
-    if ((p as any).createdAt) {
-      events.push({
-        id: `reg-${p.id}`,
-        timestamp: (p as any).createdAt,
-        type: 'patient_registered',
-        patientId: p.id,
-        patientName: p.name,
-        severity: 'info',
-        description: `Patient registered: ${p.name}, ${p.age}y — conditions: ${p.conditions.join(', ') || 'none'}`,
-        metadata: { age: p.age, gender: p.gender, conditions: p.conditions },
-      });
+    for (const p of patientsSnap.docs) {
+      const data = p.data() as any;
+      if (data.createdAt) {
+        events.push({
+          id: `reg-${p.id}`,
+          timestamp: toIso(data.createdAt),
+          type: 'patient_registered',
+          patientId: p.id,
+          patientName: data.name || p.id,
+          severity: 'info',
+          description: `Patient registered: ${data.name || p.id}, ${data.age ?? '-'}y — conditions: ${(data.conditions || []).join(', ') || 'none'}`,
+          metadata: { age: data.age, gender: data.gender, conditions: data.conditions },
+        });
+      }
     }
+
+    let result = events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    if (type) result = result.filter((e) => e.type === type);
+    result = result.slice(0, limit);
+
+    res.json({ success: true, data: result, total: events.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
   }
-
-  // Sort newest first, filter by type, limit
-  let result = events.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  if (type) result = result.filter((e) => e.type === type);
-  result = result.slice(0, limit);
-
-  res.json({ success: true, data: result, total: events.length });
 });
 
 // ─── ADMIN: BULK SIMULATE ────────────────────────────────────────────────────

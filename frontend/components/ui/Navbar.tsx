@@ -13,7 +13,8 @@ import { useTheme } from '@/contexts/ThemeContext';
 export default function Navbar() {
   const router = useRouter();
   const { lang, setLang } = useLanguage();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const isPatient = user?.type === 'patient';
   const { addToast } = useToast();
   const { toggleTheme, isDark } = useTheme();
 
@@ -23,6 +24,7 @@ export default function Navbar() {
   const [searchOpen, setSearchOpen]     = useState(false);
   const [userOpen, setUserOpen]         = useState(false);
   const [profileLoaded, setProfileLoaded] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   const [bellOpen, setBellOpen]         = useState(false);
   const [recentAlerts, setRecentAlerts] = useState<RiskAssessment[]>([]);
@@ -37,6 +39,10 @@ export default function Navbar() {
     api.getPatients()
       .then((pts) => { setAllPatients(pts); setProfileLoaded(true); })
       .catch(() => setProfileLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    setMounted(true);
   }, []);
 
   const [hasHighAlert, setHasHighAlert] = useState(false);
@@ -135,8 +141,8 @@ export default function Navbar() {
         </div>
       </Link>
 
-      {/* ── Search Bar ─────────────────────────────────────────────── */}
-      <div ref={searchRef} className="flex-1 max-w-xl relative">
+      {/* ── Search Bar (admin only) ─────────────────────────────────── */}
+      <div ref={searchRef} className={`flex-1 max-w-xl relative ${isPatient ? 'hidden' : ''}`}>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 dark:text-slate-500 pointer-events-none" />
           <input
@@ -232,9 +238,11 @@ export default function Navbar() {
         <button
           onClick={toggleTheme}
           className="w-9 h-9 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 flex items-center justify-center transition-colors"
-          title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+          title={!mounted ? 'Toggle theme' : isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         >
-          {isDark
+          {!mounted
+            ? <Moon className="w-4 h-4 text-slate-600" />
+            : isDark
             ? <Sun className="w-4 h-4 text-amber-400" />
             : <Moon className="w-4 h-4 text-slate-600" />}
         </button>
@@ -291,33 +299,55 @@ export default function Navbar() {
             <div className="w-6 h-6 rounded-full bg-gradient-to-br from-brand-500 to-teal-500 flex items-center justify-center">
               <User className="w-3.5 h-3.5 text-white" />
             </div>
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-200 hidden sm:block">Admin</span>
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200 hidden sm:block">
+              {user?.name || 'Admin'}
+            </span>
             <ChevronDown className={`w-3.5 h-3.5 text-slate-400 dark:text-slate-500 transition-transform ${userOpen ? 'rotate-180' : ''}`} />
           </button>
 
           {userOpen && (
             <div className="absolute right-0 top-full mt-1.5 w-52 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-card-lg overflow-hidden z-50 animate-slide-up">
               <div className="p-3 border-b border-slate-100 dark:border-slate-700">
-                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">CareSphere Admin</p>
-                <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">admin@caresphere.my</p>
-              </div>
-              <div className="p-1.5">
-                <Link href="/onboard" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
-                  <Activity className="w-4 h-4 text-slate-400 dark:text-slate-500" />
-                  Add New Patient
-                </Link>
-              </div>
-              <div className="p-1.5 border-t border-slate-100 dark:border-slate-700">
-                <div className="flex items-center gap-2 px-3 py-2">
-                  <span className="text-xs text-slate-400 dark:text-slate-500">
-                    {profileLoaded ? `${allPatients.length.toLocaleString()} patients` : 'Loading…'}
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  {isPatient ? user?.name : 'CareSphere Admin'}
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
+                  {isPatient ? (user?.accountNumber || 'Patient') : 'admin@caresphere.my'}
+                </p>
+                {isPatient && (
+                  <span className="inline-block mt-1.5 text-[10px] font-bold bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-400 px-2 py-0.5 rounded-full border border-teal-200 dark:border-teal-800">
+                    Patient Portal
                   </span>
-                  <span className="ml-auto text-xs text-teal-600 font-medium flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-blink" />
-                    Online
-                  </span>
+                )}
+              </div>
+              {isPatient ? (
+                <div className="p-1.5">
+                  <Link href={`/patients/${user?.id}`} className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                    <Activity className="w-4 h-4 text-brand-500" />
+                    My Health Profile
+                  </Link>
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div className="p-1.5">
+                    <Link href="/onboard" className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">
+                      <Activity className="w-4 h-4 text-slate-400 dark:text-slate-500" />
+                      Add New Patient
+                    </Link>
+                  </div>
+                  <div className="p-1.5 border-t border-slate-100 dark:border-slate-700">
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <span className="text-xs text-slate-400 dark:text-slate-500">
+                        {profileLoaded ? `${allPatients.length.toLocaleString()} patients` : 'Loading…'}
+                      </span>
+                      <span className="ml-auto text-xs text-teal-600 font-medium flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-blink" />
+                        Online
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
               <div className="p-1.5 border-t border-slate-100 dark:border-slate-700">
                 <button
                   onClick={() => { logout(); addToast('Signed out successfully', 'info'); }}

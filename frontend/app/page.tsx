@@ -1,23 +1,42 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import {
   Activity, AlertTriangle, Users, Shield, RefreshCw, Zap,
-  Play, Square, CheckCircle2, Search, Filter, SlidersHorizontal,
+  Play, Square, CheckCircle2, Search, MapPin, TrendingUp, Clock, Bell,
 } from 'lucide-react';
-import { api, DashboardStats, RiskAssessment } from '@/lib/api';
+import { api, DashboardStats, RiskAssessment, Patient } from '@/lib/api';
 import PatientCard from '@/components/dashboard/PatientCard';
 import RiskChart from '@/components/dashboard/RiskChart';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { useSearchParams } from 'next/navigation';
 import { Suspense } from 'react';
 
+const DashboardMap = dynamic(() => import('@/components/dashboard/DashboardMap'), {
+  ssr: false,
+  loading: () => <div className="h-full flex items-center justify-center text-slate-400 text-sm">Loading map…</div>,
+});
+
 function DashboardContent() {
   const { t } = useLanguage();
+  const { user } = useAuth();
+  const router = useRouter();
   const searchParams = useSearchParams();
+
+  // Patients should not see the admin dashboard — send them to their own profile
+  useEffect(() => {
+    if (user?.type === 'patient' && user?.id) {
+      router.replace(`/patients/${user.id}`);
+    }
+  }, [user, router]);
 
   const [stats, setStats]               = useState<DashboardStats | null>(null);
   const [allAssessments, setAllAssessments] = useState<RiskAssessment[]>([]);
+  const [allPatients, setAllPatients]   = useState<Patient[]>([]);
+  const [activeTab, setActiveTab]       = useState<'map' | 'grid'>('map');
   const [loading, setLoading]           = useState(true);
   const [simLoading, setSimLoading]     = useState(false);
   const [autoSim, setAutoSim]           = useState(false);
@@ -41,6 +60,8 @@ function DashboardContent() {
       setStats(statsData);
       setAllAssessments(assessData);
       setAutoSim(statsData.autoSimEnabled);
+      const patientsData = await api.getPatients();
+      setAllPatients(patientsData);
       setLastUpdate(new Date());
     } catch (err) {
       console.error('Dashboard fetch error:', err);
@@ -246,18 +267,130 @@ function DashboardContent() {
         <StatCard icon={Activity}      label={t.assessmentsToday}  value={stats?.alertsToday || 0}      color="teal" />
       </div>
 
-      {/* ── High-risk Alert Banner ────────────────────────────────── */}
-      {(stats?.highRiskCount || 0) > 0 && (
-        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-xl p-4 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-red-100 dark:bg-red-900/30 flex items-center justify-center shrink-0">
-            <Zap className="w-5 h-5 text-red-600 dark:text-red-400 animate-pulse" />
+      {/* ── View Toggle ─────────────────────────────────────────── */}
+      <div className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 w-fit">
+        {(['map', 'grid'] as const).map((tab) => (
+          <button key={tab} onClick={() => setActiveTab(tab)}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm font-medium transition-all capitalize ${
+              activeTab === tab
+                ? 'bg-brand-500 text-white shadow-sm'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}>
+            {tab === 'map' ? <MapPin className="w-3.5 h-3.5" /> : <Users className="w-3.5 h-3.5" />}
+            {tab === 'map' ? 'Live Map' : 'Patient Grid'}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Malaysia Patient Map ────────────────────────────────── */}
+      {activeTab === 'map' && (
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
+          {/* Map */}
+          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+              <MapPin className="w-4 h-4 text-brand-500" />
+              <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Patient Location Map — Malaysia</h2>
+              <div className="ml-auto flex items-center gap-3 text-[11px]">
+                {[['#ef4444','High Risk'],['#f59e0b','Medium'],['#22c55e','Low'],['#94a3b8','No data']].map(([color, label]) => (
+                  <span key={label} className="flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: color }} />
+                    <span className="text-slate-500 dark:text-slate-400">{label}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div style={{ height: '480px' }}>
+              <DashboardMap patients={allPatients} assessments={allAssessments} />
+            </div>
           </div>
-          <div>
-            <p className="font-semibold text-red-700 dark:text-red-400">Autonomous Agent Actions Active</p>
-            <p className="text-sm text-red-600 dark:text-red-400 mt-0.5">
-              {stats?.highRiskCount} high-risk patient{(stats?.highRiskCount || 0) > 1 ? 's' : ''} detected.
-              CareSphere AI has autonomously alerted caregivers, generated medical summaries, and identified nearby hospitals.
-            </p>
+
+          {/* High-risk patients sidebar */}
+          <div className="space-y-4">
+            {/* Critical alerts */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+                <Bell className="w-4 h-4 text-red-500" />
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Critical Alerts</h3>
+                {stats && stats.highRiskCount > 0 && (
+                  <span className="ml-auto text-[11px] font-bold text-red-600 bg-red-50 dark:bg-red-900/20 px-2 py-0.5 rounded-full">{stats.highRiskCount} HIGH</span>
+                )}
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-700 max-h-56 overflow-y-auto">
+                {allAssessments
+                  .filter(a => a.riskLevel === 'high')
+                  .slice(0, 10)
+                  .map(a => {
+                    const p = allPatients.find(pt => pt.id === a.patientId);
+                    if (!p) return null;
+                    return (
+                      <button key={a.id} onClick={() => router.push(`/patients/${p.id}`)}
+                        className="w-full text-left px-4 py-2.5 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors flex items-center gap-3">
+                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                          <p className="text-[10px] text-slate-400">{p.age}y · {p.location.city} · Score {a.riskScore}/100</p>
+                        </div>
+                      </button>
+                    );
+                  }).filter(Boolean)}
+                {allAssessments.filter(a => a.riskLevel === 'high').length === 0 && (
+                  <p className="text-xs text-slate-400 text-center py-6">No critical alerts right now</p>
+                )}
+              </div>
+            </div>
+
+            {/* Risk breakdown by state */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-brand-500" />
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Risk by State</h3>
+              </div>
+              <div className="p-3 space-y-2 max-h-56 overflow-y-auto">
+                {(() => {
+                  const stateMap: Record<string, { total: number; high: number }> = {};
+                  allPatients.forEach(p => {
+                    const state = p.location.state || 'Unknown';
+                    if (!stateMap[state]) stateMap[state] = { total: 0, high: 0 };
+                    stateMap[state].total++;
+                    const assessment = allAssessments.find(a => a.patientId === p.id);
+                    if (assessment?.riskLevel === 'high') stateMap[state].high++;
+                  });
+                  return Object.entries(stateMap)
+                    .sort((a, b) => b[1].high - a[1].high)
+                    .slice(0, 8)
+                    .map(([state, data]) => (
+                      <div key={state} className="flex items-center gap-2">
+                        <p className="text-xs text-slate-600 dark:text-slate-300 w-28 truncate">{state}</p>
+                        <div className="flex-1 h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+                          <div className="h-full bg-red-400 rounded-full" style={{ width: `${(data.high / Math.max(data.total, 1)) * 100}%` }} />
+                        </div>
+                        <span className="text-[10px] text-slate-400 w-12 text-right">{data.high}/{data.total}</span>
+                      </div>
+                    ));
+                })()}
+              </div>
+            </div>
+
+            {/* Recent activity */}
+            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+              <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
+                <Clock className="w-4 h-4 text-brand-500" />
+                <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">Recent Assessments</h3>
+              </div>
+              <div className="divide-y divide-slate-100 dark:divide-slate-700 max-h-40 overflow-y-auto">
+                {allAssessments.slice(0, 8).map(a => {
+                  const p = allPatients.find(pt => pt.id === a.patientId);
+                  const color = a.riskLevel === 'high' ? 'text-red-500' : a.riskLevel === 'medium' ? 'text-amber-500' : 'text-green-500';
+                  return (
+                    <div key={a.id} className="px-4 py-2 flex items-center gap-2">
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.riskLevel === 'high' ? 'bg-red-500' : a.riskLevel === 'medium' ? 'bg-amber-500' : 'bg-green-500'}`} />
+                      <p className="text-xs text-slate-600 dark:text-slate-300 flex-1 truncate">{p?.name ?? a.patientId}</p>
+                      <span className={`text-[10px] font-bold ${color}`}>{a.riskScore}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -275,7 +408,7 @@ function DashboardContent() {
       )}
 
       {/* ── Patient Monitoring Grid ───────────────────────────────── */}
-      <div>
+      {activeTab === 'grid' && (<div>
         {/* Section Header + Filters */}
         <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
           <div className="flex items-center gap-2">
@@ -361,10 +494,10 @@ function DashboardContent() {
             </button>
           </div>
         )}
-      </div>
+      </div>)}
 
       {/* ── Pagination ────────────────────────────────────────────── */}
-      {stats && stats.totalPages > 1 && (
+      {activeTab === 'grid' && stats && stats.totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
           <button
             onClick={() => { const np = Math.max(1, page - 1); setPage(np); fetchData(np); }}

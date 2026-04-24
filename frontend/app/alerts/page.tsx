@@ -4,10 +4,38 @@ import { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, CheckCircle, Clock, Zap, FileText, MapPin, Phone, RefreshCw } from 'lucide-react';
 import { api, RiskAssessment } from '@/lib/api';
 import RiskBadge from '@/components/ui/RiskBadge';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 
 type RiskFilter = 'all' | 'high' | 'medium' | 'low';
 type DateFilter = 'today' | 'week' | 'all';
+
+function normalizeTimestamp(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return isValid(value) ? value : null;
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const withToDate = value as { toDate?: () => Date };
+    if (typeof withToDate.toDate === 'function') {
+      const parsed = withToDate.toDate();
+      return isValid(parsed) ? parsed : null;
+    }
+
+    const ts = value as { _seconds?: number; seconds?: number; _nanoseconds?: number; nanoseconds?: number };
+    const seconds = ts._seconds ?? ts.seconds;
+    const nanos = ts._nanoseconds ?? ts.nanoseconds ?? 0;
+    if (typeof seconds === 'number') {
+      const parsed = new Date(seconds * 1000 + Math.floor(nanos / 1e6));
+      return isValid(parsed) ? parsed : null;
+    }
+  }
+
+  return null;
+}
 
 export default function AlertsPage() {
   const [assessments, setAssessments] = useState<RiskAssessment[]>([]);
@@ -35,8 +63,10 @@ export default function AlertsPage() {
   const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
   const dateFiltered = assessments.filter((a) => {
-    if (dateFilter === 'today') return a.timestamp.startsWith(today);
-    if (dateFilter === 'week')  return a.timestamp >= weekAgo;
+    const ts = normalizeTimestamp(a.timestamp);
+    if (!ts) return false;
+    if (dateFilter === 'today') return ts.toISOString().startsWith(today);
+    if (dateFilter === 'week')  return ts.toISOString() >= weekAgo;
     return true;
   });
 
@@ -177,7 +207,10 @@ function AlertCard({ assessment }: { assessment: RiskAssessment }) {
               )}
             </div>
             <p className="text-slate-400 dark:text-slate-500 text-xs mt-1">
-              {format(new Date(assessment.timestamp), 'dd MMM yyyy, HH:mm:ss')}
+              {(() => {
+                const ts = normalizeTimestamp(assessment.timestamp);
+                return ts ? format(ts, 'dd MMM yyyy, HH:mm:ss') : 'Invalid timestamp';
+              })()}
             </p>
             <p className="text-slate-600 dark:text-slate-300 text-sm mt-2 line-clamp-2">{assessment.geminiReasoning}</p>
           </div>

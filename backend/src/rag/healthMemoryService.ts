@@ -6,8 +6,6 @@
  */
 
 import { HealthReading, RiskAssessment, RiskLevel, ConversationMessage, Patient } from '../types/health.types';
-import { generateMalaysianPatients } from './seedGenerator';
-import { v4 as uuidv4 } from 'uuid';
 import { db } from '../lib/firebase';
 
 interface HealthDocument {
@@ -343,8 +341,9 @@ Avg O₂: ${baseline.avgOxygenSaturation.toFixed(1)}% | Avg Sleep: ${baseline.av
    */
   async loadFromFirestore(): Promise<boolean> {
     if (!db) return false;
+    const firestore = db;
     try {
-      const patientsSnap = await db.collection('patients').get();
+      const patientsSnap = await firestore.collection('patients').get();
       if (patientsSnap.empty) return false;
 
       for (const patientDoc of patientsSnap.docs) {
@@ -354,12 +353,12 @@ Avg O₂: ${baseline.avgOxygenSaturation.toFixed(1)}% | Avg Sleep: ${baseline.av
 
         const [readingsSnap, assessSnap, convsSnap, medsSnap, logsSnap, baselineSnap] =
           await Promise.all([
-            db.collection(`patients/${patient.id}/readings`).orderBy('timestamp', 'desc').limit(100).get(),
-            db.collection(`patients/${patient.id}/assessments`).orderBy('timestamp', 'desc').limit(50).get(),
-            db.collection(`patients/${patient.id}/conversations`).orderBy('timestamp', 'asc').limit(50).get(),
-            db.collection(`patients/${patient.id}/medications`).get(),
-            db.collection(`patients/${patient.id}/medicationLogs`).get(),
-            db.collection(`patients/${patient.id}/baseline`).doc('current').get(),
+            firestore.collection(`patients/${patient.id}/readings`).orderBy('timestamp', 'desc').limit(100).get(),
+            firestore.collection(`patients/${patient.id}/assessments`).orderBy('timestamp', 'desc').limit(50).get(),
+            firestore.collection(`patients/${patient.id}/conversations`).orderBy('timestamp', 'asc').limit(50).get(),
+            firestore.collection(`patients/${patient.id}/medications`).get(),
+            firestore.collection(`patients/${patient.id}/medicationLogs`).get(),
+            firestore.collection(`patients/${patient.id}/baseline`).doc('current').get(),
           ]);
 
         this.readings.set(patient.id, readingsSnap.docs.map((d) => d.data() as HealthReading));
@@ -380,294 +379,8 @@ Avg O₂: ${baseline.avgOxygenSaturation.toFixed(1)}% | Avg Sleep: ${baseline.av
 }
 
 export const healthMemory = new HealthMemoryService();
-
-/**
- * Lightweight rule-based risk scorer — used at seed time to create initial
- * assessments for every patient without calling Gemini.
- * Mirrors the clinical thresholds in riskAssessmentFlow.ts.
- */
-function seedRiskAssessment(reading: HealthReading): RiskAssessment {
-  let score = 0;
-  const reasons: string[] = [];
-
-  if (reading.oxygenSaturation < 90) { score += 35; reasons.push(`Critical hypoxaemia: SpO₂ ${reading.oxygenSaturation.toFixed(1)}%`); }
-  else if (reading.oxygenSaturation < 93) { score += 22; reasons.push(`Low O₂ saturation: ${reading.oxygenSaturation.toFixed(1)}%`); }
-  else if (reading.oxygenSaturation < 95) { score += 12; reasons.push(`Borderline O₂: ${reading.oxygenSaturation.toFixed(1)}% — monitor`); }
-
-  if (reading.bloodPressure.systolic > 180) { score += 25; reasons.push(`Hypertensive crisis: ${reading.bloodPressure.systolic}/${reading.bloodPressure.diastolic}mmHg`); }
-  else if (reading.bloodPressure.systolic > 160) { score += 18; reasons.push(`Stage 2 hypertension: ${reading.bloodPressure.systolic}mmHg`); }
-  else if (reading.bloodPressure.systolic > 140) { score += 8;  reasons.push(`Elevated BP: ${reading.bloodPressure.systolic}/${reading.bloodPressure.diastolic}mmHg`); }
-
-  if (reading.heartRate > 120) { score += 25; reasons.push(`Severe tachycardia: ${reading.heartRate}bpm`); }
-  else if (reading.heartRate > 100) { score += 15; reasons.push(`Tachycardia: ${reading.heartRate}bpm`); }
-  else if (reading.heartRate < 50) { score += 25; reasons.push(`Bradycardia: ${reading.heartRate}bpm — fall risk`); }
-
-  if (reading.movementScore < 15) { score += 18; reasons.push(`Near-immobility: ${reading.movementScore.toFixed(0)}/100 — high fall risk`); }
-  else if (reading.movementScore < 30) { score += 10; reasons.push(`Low mobility: ${reading.movementScore.toFixed(0)}/100`); }
-
-  if (reading.sleepHours < 3) { score += 18; reasons.push(`Severe sleep deprivation: ${reading.sleepHours.toFixed(1)}h`); }
-  else if (reading.sleepHours < 5) { score += 10; reasons.push(`Poor sleep: ${reading.sleepHours.toFixed(1)}h`); }
-
-  if (reading.temperature > 38.5) { score += 15; reasons.push(`Fever: ${reading.temperature.toFixed(1)}°C`); }
-  else if (reading.temperature < 35.5) { score += 20; reasons.push(`Hypothermia: ${reading.temperature.toFixed(1)}°C`); }
-
-  if (reading.glucoseLevel !== undefined) {
-    if (reading.glucoseLevel > 14) { score += 15; reasons.push(`Hyperglycaemia: ${reading.glucoseLevel.toFixed(1)} mmol/L`); }
-    else if (reading.glucoseLevel < 4) { score += 20; reasons.push(`Hypoglycaemia: ${reading.glucoseLevel.toFixed(1)} mmol/L — urgent`); }
-  }
-
-  if (reasons.length === 0) reasons.push('All vital signs within acceptable range for elderly patient');
-
-  const riskScore = Math.min(100, score);
-  const riskLevel: RiskLevel = riskScore >= 70 ? 'high' : riskScore >= 40 ? 'medium' : 'low';
-
-  const recommendations =
-    riskScore >= 70
-      ? ['Activate emergency response — contact caregiver immediately', 'Call 999 or nearest Emergency Department']
-      : riskScore >= 40
-      ? ['Caregiver notification required', 'Schedule GP consultation within 1–2 days']
-      : ['Continue standard monitoring schedule', 'Encourage gentle physical activity'];
-
-  return {
-    id: uuidv4(),
-    patientId: reading.patientId,
-    timestamp: reading.timestamp,
-    riskLevel,
-    riskScore,
-    reasons,
-    recommendations,
-    geminiReasoning: `Seed assessment (rule-based): ${reasons[0]}. Risk score ${riskScore}/100 — ${riskLevel} risk.`,
-    actions: [],
-    healthReading: reading,
-  };
-}
-
 export async function seedDemoData(): Promise<void> {
-  // If Firestore already has data, restore it and skip seeding
   const restored = await healthMemory.loadFromFirestore();
   if (restored) return;
-  const patients: Patient[] = [
-    {
-      id: 'patient-001',
-      name: 'Ahmad bin Razali',
-      age: 73,
-      gender: 'male',
-      conditions: ['Type 2 Diabetes', 'Hypertension', 'Mild Arthritis'],
-      medications: ['Metformin 500mg', 'Amlodipine 5mg', 'Aspirin 100mg'],
-      caregiver: {
-        name: 'Siti binti Ahmad',
-        phone: '+60123456789',
-        email: 'siti.ahmad@email.com',
-        relationship: 'Daughter',
-      },
-      location: {
-        address: 'No. 12, Jalan Mawar',
-        city: 'Johor Bahru',
-        state: 'Johor',
-        lat: 1.4927,
-        lng: 103.7414,
-      },
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'patient-002',
-      name: 'Meenakshi a/p Krishnan',
-      age: 68,
-      gender: 'female',
-      conditions: ['Heart Disease', 'Osteoporosis'],
-      medications: ['Atorvastatin 40mg', 'Calcium + Vitamin D', 'Warfarin 5mg'],
-      caregiver: {
-        name: 'Rajan s/o Krishnan',
-        phone: '+60198765432',
-        email: 'rajan.krishnan@email.com',
-        relationship: 'Son',
-      },
-      location: {
-        address: 'No. 45, Taman Melati',
-        city: 'Kuala Lumpur',
-        state: 'Wilayah Persekutuan',
-        lat: 3.1390,
-        lng: 101.6869,
-      },
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'patient-003',
-      name: 'Lim Ah Kow',
-      age: 80,
-      gender: 'male',
-      conditions: ['COPD', 'Atrial Fibrillation', 'Cognitive Decline'],
-      medications: ['Salbutamol inhaler', 'Digoxin 0.25mg', 'Rivastigmine 6mg'],
-      caregiver: {
-        name: 'Lim Wei Ming',
-        phone: '+60167891234',
-        email: 'weiming.lim@email.com',
-        relationship: 'Son',
-      },
-      location: {
-        address: 'No. 8, Jalan Perdana',
-        city: 'George Town',
-        state: 'Pulau Pinang',
-        lat: 5.4141,
-        lng: 100.3288,
-      },
-      createdAt: new Date().toISOString(),
-    },
-    {
-      id: 'patient-004',
-      name: 'Dayang binti Musa',
-      age: 65,
-      gender: 'female',
-      conditions: ['Type 2 Diabetes', 'Chronic Kidney Disease Stage 3', 'Mild Depression'],
-      medications: ['Insulin Glargine 20 units', 'Amlodipine 5mg', 'Sertraline 50mg', 'Calcium Carbonate 500mg'],
-      caregiver: {
-        name: 'Azman bin Musa',
-        phone: '+60198887766',
-        email: 'azman.musa@email.com',
-        relationship: 'Husband',
-      },
-      location: {
-        address: 'Taman Sri Sarawak, Jalan Bako',
-        city: 'Kuching',
-        state: 'Sarawak',
-        lat: 1.5497,
-        lng: 110.3592,
-      },
-      createdAt: new Date().toISOString(),
-    },
-  ];
-
-  patients.forEach((p) => healthMemory.storePatient(p));
-
-  // Patient profiles for realistic seeding:
-  // 0 = Ahmad (diabetic, hypertensive) — warning baseline
-  // 1 = Meenakshi (heart disease) — moderate baseline
-  // 2 = Lim Ah Kow (COPD, AF) — high risk baseline
-  // 3 = Dayang (diabetic, CKD, depression) — stable but monitored
-  const patientProfiles = [
-    { baseHR: 82, baseSystolic: 158, baseDiastolic: 96, baseSleep: 5.0, baseMovement: 35, baseO2: 96, baseGlucose: 10.2 },
-    { baseHR: 78, baseSystolic: 132, baseDiastolic: 84, baseSleep: 6.5, baseMovement: 45, baseO2: 96, baseGlucose: undefined },
-    { baseHR: 98, baseSystolic: 128, baseDiastolic: 80, baseSleep: 5.5, baseMovement: 22, baseO2: 92, baseGlucose: undefined },
-    { baseHR: 74, baseSystolic: 138, baseDiastolic: 88, baseSleep: 7.0, baseMovement: 50, baseO2: 97, baseGlucose: 9.1 },
-  ];
-
-  const now = Date.now();
-  patients.forEach((patient, pIdx) => {
-    const profile = patientProfiles[pIdx] || patientProfiles[0];
-    for (let i = 9; i >= 0; i--) {
-      const ts = new Date(now - i * 3600000).toISOString();
-      const reading: HealthReading = {
-        id: `reading-${patient.id}-${i}`,
-        patientId: patient.id,
-        timestamp: ts,
-        heartRate: Math.round(profile.baseHR + (Math.random() * 16 - 8)),
-        sleepHours: Math.round((profile.baseSleep + (Math.random() * 1.5 - 0.75)) * 10) / 10,
-        movementScore: Math.round(profile.baseMovement + (Math.random() * 20 - 10)),
-        bloodPressure: {
-          systolic: Math.round(profile.baseSystolic + (Math.random() * 16 - 8)),
-          diastolic: Math.round(profile.baseDiastolic + (Math.random() * 8 - 4)),
-        },
-        oxygenSaturation: Math.round((profile.baseO2 + (Math.random() * 2 - 1)) * 10) / 10,
-        temperature: Math.round((36.5 + Math.random() * 0.7) * 10) / 10,
-        glucoseLevel: profile.baseGlucose
-          ? Math.round((profile.baseGlucose + (Math.random() * 3 - 1.5)) * 10) / 10
-          : undefined,
-      };
-      healthMemory.storeReading(reading);
-    }
-
-    // Compute baseline after seeding
-    healthMemory.computeBaseline(patient.id);
-
-    // Seed one rule-based assessment so this patient appears on dashboard immediately
-    const heroLatest = healthMemory.getLatestReadings(patient.id, 1)[0];
-    if (heroLatest) healthMemory.storeAssessment(seedRiskAssessment(heroLatest));
-
-    // Seed demo medication schedules
-    const medNames = patient.medications.slice(0, 2);
-    medNames.forEach((medName, mIdx) => {
-      const medId = `med-${patient.id}-${mIdx}`;
-      healthMemory.storeMedication({
-        id: medId,
-        patientId: patient.id,
-        name: medName,
-        dosage: '1 tablet',
-        times: mIdx === 0 ? ['08:00', '20:00'] : ['12:00'],
-        createdAt: new Date().toISOString(),
-      });
-
-      // Seed some logs for last 3 days
-      for (let d = 2; d >= 0; d--) {
-        const date = new Date(now - d * 86400000);
-        const dateStr = date.toISOString().split('T')[0];
-        const times = mIdx === 0 ? ['08:00', '20:00'] : ['12:00'];
-        times.forEach((t, tIdx) => {
-          const taken = Math.random() > 0.25; // 75% adherence
-          healthMemory.storeMedicationLog({
-            id: `log-${patient.id}-${mIdx}-${d}-${tIdx}`,
-            patientId: patient.id,
-            medicationId: medId,
-            medicationName: medName,
-            scheduledTime: t,
-            date: dateStr,
-            taken,
-            takenAt: taken ? `${dateStr}T${t}:00.000Z` : undefined,
-          });
-        });
-      }
-    });
-  });
-
-  // ── Bulk-seed 996 generated patients (total = 1000) ───────────────────────
-  const generated = generateMalaysianPatients(996, 5);
-  generated.forEach(({ patient: gp, vitalProfile }, gIdx) => {
-    healthMemory.storePatient(gp);
-
-    // Seed 5 staggered readings per generated patient
-    for (let i = 4; i >= 0; i--) {
-      const ts = new Date(now - (i * 2 + gIdx % 3) * 3600000).toISOString();
-      // Small per-reading jitter — deterministic-ish via index
-      const jitter = (base: number, range: number) =>
-        Math.round((base + ((gIdx * 7 + i * 3) % (range * 2 + 1)) - range) * 10) / 10;
-
-      const reading: HealthReading = {
-        id: `reading-${gp.id}-seed-${i}`,
-        patientId: gp.id,
-        timestamp: ts,
-        heartRate: Math.round(jitter(vitalProfile.baseHR, 8)),
-        sleepHours: Math.max(1, Math.min(12, jitter(vitalProfile.baseSleep, 1))),
-        movementScore: Math.max(0, Math.min(100, Math.round(jitter(vitalProfile.baseMovement, 10)))),
-        bloodPressure: {
-          systolic: Math.round(jitter(vitalProfile.baseSystolic, 8)),
-          diastolic: Math.round(jitter(vitalProfile.baseDiastolic, 5)),
-        },
-        oxygenSaturation: Math.max(85, Math.min(100, jitter(vitalProfile.baseO2, 1))),
-        temperature: Math.max(35, Math.min(40, jitter(vitalProfile.baseTemp, 0.3))),
-        glucoseLevel: vitalProfile.baseGlucose
-          ? Math.max(3, Math.min(22, jitter(vitalProfile.baseGlucose, 1.5)))
-          : undefined,
-      };
-      healthMemory.storeReading(reading);
-    }
-
-    healthMemory.computeBaseline(gp.id);
-
-    // Seed one rule-based assessment so this patient appears on dashboard immediately
-    const genLatest = healthMemory.getLatestReadings(gp.id, 1)[0];
-    if (genLatest) healthMemory.storeAssessment(seedRiskAssessment(genLatest));
-
-    // Seed one medication schedule for the first med (if any)
-    if (gp.medications.length > 0) {
-      healthMemory.storeMedication({
-        id: `med-${gp.id}-0`,
-        patientId: gp.id,
-        name: gp.medications[0],
-        dosage: '1 tablet',
-        times: ['08:00', '20:00'],
-        createdAt: new Date().toISOString(),
-      });
-    }
-  });
-
-  console.log(`[CareSphere AI] Seeded ${4 + generated.length} patients (4 hero + ${generated.length} generated)`);
+  console.warn('[CareSphere AI] No Firestore patient data found. Run `npm run seed:firestore:schema:full` to initialize data.');
 }

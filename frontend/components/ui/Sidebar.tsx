@@ -6,9 +6,10 @@ import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, Bell, TrendingUp, MapPin,
   Pill, Users, FileText, UserPlus, ChevronRight,
-  Activity, Zap, Brain, Shield, ClipboardList,
+  Activity, Zap, Brain, Shield, ClipboardList, Heart,
 } from 'lucide-react';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 
 interface NavItem {
@@ -44,7 +45,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Tools',
     items: [
       { href: '/hospitals', icon: MapPin,   key: 'hospitals' },
-      { href: '/report',    icon: FileText, key: 'weeklyReport' },
+{ href: '/report',    icon: FileText, key: 'weeklyReport' },
       { href: '/onboard',   icon: UserPlus, label: 'Add Patient' },
     ],
   },
@@ -57,9 +58,40 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(name + '='));
+  return match ? decodeURIComponent(match.split('=')[1]) : null;
+}
+
 export default function Sidebar() {
   const pathname = usePathname();
   const { t } = useLanguage();
+  const { user } = useAuth();
+
+  const [isPatient, setIsPatient] = useState(false);
+  const [patientId, setPatientId] = useState<string | null>(null);
+  const [patientName, setPatientName] = useState<string | null>(null);
+
+  // Read cookies on client only (avoids SSR/hydration mismatch)
+  useEffect(() => {
+    const pid = readCookie('cs_patient_id');
+    setIsPatient(!!pid);
+    setPatientId(pid);
+    setPatientName(readCookie('cs_patient_name'));
+  }, []);
+
+  // Also sync with AuthContext once it loads (for logout/login changes)
+  useEffect(() => {
+    if (user !== undefined) {
+      setIsPatient(user?.type === 'patient');
+      if (user?.type === 'patient') {
+        setPatientId(user.id);
+        setPatientName(user.name);
+      }
+    }
+  }, [user]);
+
   const [hasHighAlert, setHasHighAlert] = useState(false);
 
   useEffect(() => {
@@ -89,14 +121,72 @@ export default function Sidebar() {
 
       {/* ── Navigation Groups ────────────────────────────────────── */}
       <nav className="flex-1 p-3 space-y-5 pt-4">
-        {NAV_GROUPS.map((group) => (
+
+        {/* Patient-only nav */}
+        {isPatient && (
+          <>
+            <div>
+              <p className="px-3 mb-1.5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">My Health</p>
+              <ul className="space-y-0.5">
+                {[
+                  { href: `/patients/${patientId}`, icon: Heart, label: 'My Profile' },
+                  { href: '/companion',            icon: Brain, label: 'AI Companion' },
+                  { href: '/medications',          icon: Pill,  label: 'Medications' },
+                ].map(({ href, icon: Icon, label }) => {
+                  const active = pathname === href;
+                  return (
+                    <li key={href}>
+                      <Link href={href}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 group border-l-[3px] ${
+                          active
+                            ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 border-brand-500'
+                            : 'text-slate-600 dark:text-slate-300 border-transparent hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-100'
+                        }`}>
+                        <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-brand-500' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-300'}`} />
+                        <span className="flex-1">{label}</span>
+                        {active && <ChevronRight className="w-3.5 h-3.5 text-brand-400 shrink-0" />}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+            <div>
+              <p className="px-3 mb-1.5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Emergency</p>
+              <ul className="space-y-0.5">
+                {[
+                  { href: '/hospitals', icon: MapPin, label: 'Nearby Hospitals' },
+                ].map(({ href, icon: Icon, label }) => {
+                  const active = pathname === href;
+                  return (
+                    <li key={href}>
+                      <Link href={href}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 group border-l-[3px] ${
+                          active
+                            ? 'bg-brand-50 dark:bg-brand-900/20 text-brand-600 border-brand-500'
+                            : 'text-slate-600 dark:text-slate-300 border-transparent hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-100'
+                        }`}>
+                        <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-brand-500' : 'text-slate-400 dark:text-slate-500 group-hover:text-slate-600 dark:group-hover:text-slate-300'}`} />
+                        <span className="flex-1">{label}</span>
+                        {active && <ChevronRight className="w-3.5 h-3.5 text-brand-400 shrink-0" />}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </>
+        )}
+
+        {/* Admin nav */}
+        {!isPatient && NAV_GROUPS.map((group) => (
           <div key={group.label}>
             <p className="px-3 mb-1.5 text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
               {group.label}
             </p>
             <ul className="space-y-0.5">
               {group.items.map((item) => {
-                const { href, icon: Icon, badge } = item;
+                const { href, icon: Icon } = item;
                 const active = pathname === href;
                 const itemLabel = getLabel(item);
                 return (

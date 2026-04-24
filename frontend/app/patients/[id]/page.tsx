@@ -1,44 +1,65 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   Heart, Activity, Wind, Moon, Zap, Thermometer,
-  User, MapPin, Phone, Pill, ChevronLeft, Send,
-  AlertTriangle, CheckCircle2, MessageCircle, RefreshCw,
-  Stethoscope, FileText, Bot, Clock, Hospital,
-  BellRing, Siren, Brain,
+  User, MapPin, Phone, Pill,
+  AlertTriangle, CheckCircle2,
+  Brain, Edit3, Save, X, Shield,
+  PhoneCall,
+  ChevronDown, Sparkles, Clock3, CircleCheckBig,
 } from 'lucide-react';
+import Link from 'next/link';
 import { format } from 'date-fns';
-import RiskBadge from '@/components/ui/RiskBadge';
-import { api, Patient, HealthReading, RiskAssessment, CompanionResponse } from '@/lib/api';
+import { api, Patient, HealthReading, RiskAssessment, MedicationData } from '@/lib/api';
 
-/* ─── helpers ───────────────────────────────────────────────── */
-const isAbnormalHR   = (v: number) => v > 100 || v < 55;
-const isAbnormalBP   = (v: number) => v > 160;
-const isAbnormalO2   = (v: number) => v < 95;
-const isAbnormalSleep= (v: number) => v < 5;
-const isAbnormalTemp = (v: number) => v > 37.8;
+/* ─── cookie helper ─────────────────────────────────────────── */
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(name + '='));
+  return match ? decodeURIComponent(match.split('=')[1]) : null;
+}
+
+/* ─── vital helpers ─────────────────────────────────────────── */
+const isAbnormalHR    = (v: number) => v > 100 || v < 55;
+const isAbnormalBP    = (v: number) => v > 160;
+const isAbnormalO2    = (v: number) => v < 95;
+const isAbnormalSleep = (v: number) => v < 5;
+const isAbnormalTemp  = (v: number) => v > 37.8;
+
+/* ─── medication time helper ────────────────────────────────── */
+function getMedStatus(scheduledTime: string): 'due' | 'upcoming' | 'passed' {
+  const [h, m] = scheduledTime.split(':').map(Number);
+  const now = new Date();
+  const doseMin = h * 60 + m;
+  const nowMin  = now.getHours() * 60 + now.getMinutes();
+  if (doseMin <= nowMin && nowMin <= doseMin + 60) return 'due';
+  if (doseMin > nowMin) return 'upcoming';
+  return 'passed';
+}
 
 /* ─── VitalCard ─────────────────────────────────────────────── */
-function VitalCard({ icon: Icon, label, value, unit, alert }: {
-  icon: React.ElementType; label: string; value: string; unit: string; alert?: boolean;
+function VitalCard({ icon: Icon, label, value, unit, alert, tip, friendlyLabel }: {
+  icon: React.ElementType; label: string; value: string; unit: string;
+  alert?: boolean; tip?: string; friendlyLabel?: string;
 }) {
   return (
-    <div className={`rounded-xl p-4 flex flex-col gap-1.5 border ${
-      alert
-        ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50'
-        : 'bg-slate-50 dark:bg-slate-700/50 border-slate-200 dark:border-slate-600'
+    <div className={`rounded-2xl p-5 flex flex-col gap-2 border-2 ${
+      alert ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700'
+            : 'bg-slate-50 dark:bg-slate-700/50 border-slate-200 dark:border-slate-600'
     }`}>
       <div className="flex items-center gap-2">
-        <Icon className={`w-4 h-4 ${alert ? 'text-red-500' : 'text-brand-500'}`} />
-        <span className={`text-xs font-medium ${alert ? 'text-red-600 dark:text-red-400' : 'text-slate-500 dark:text-slate-400'}`}>{label}</span>
-        {alert && <AlertTriangle className="w-3.5 h-3.5 text-red-400 ml-auto" />}
+        <Icon className={`w-5 h-5 ${alert ? 'text-red-500' : 'text-brand-500'}`} />
+        <span className={`text-sm font-semibold ${alert ? 'text-red-700 dark:text-red-400' : 'text-slate-600 dark:text-slate-400'}`}>{label}</span>
       </div>
-      <p className={`text-2xl font-bold leading-none ${alert ? 'text-red-700 dark:text-red-400' : 'text-slate-900 dark:text-slate-100'}`}>
-        {value}
-        <span className={`text-xs font-normal ml-1 ${alert ? 'text-red-500 dark:text-red-400' : 'text-slate-400 dark:text-slate-500'}`}>{unit}</span>
+      <p className={`text-3xl font-bold leading-none ${alert ? 'text-red-700 dark:text-red-400' : 'text-slate-900 dark:text-slate-100'}`}>
+        {value}<span className="text-base font-normal ml-1.5 text-slate-400">{unit}</span>
       </p>
+      {friendlyLabel && (
+        <p className={`text-sm font-bold ${alert ? 'text-red-500' : 'text-green-600 dark:text-green-400'}`}>{friendlyLabel}</p>
+      )}
+      {tip && <p className="text-xs text-slate-400 leading-snug mt-0.5">{tip}</p>}
     </div>
   );
 }
@@ -46,592 +67,620 @@ function VitalCard({ icon: Icon, label, value, unit, alert }: {
 /* ─── ConditionPill ─────────────────────────────────────────── */
 function ConditionPill({ children, color = 'teal' }: { children: React.ReactNode; color?: 'teal' | 'slate' | 'purple' }) {
   const cls = {
-    teal:   'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 border-brand-200 dark:border-brand-800/50',
-    slate:  'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600',
-    purple: 'bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800/50',
+    teal:   'bg-brand-50 text-brand-700 border-brand-200',
+    slate:  'bg-slate-100 text-slate-600 border-slate-200',
+    purple: 'bg-purple-50 text-purple-700 border-purple-200',
   }[color];
-  return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${cls}`}>
-      {children}
-    </span>
-  );
+  return <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium border ${cls}`}>{children}</span>;
 }
 
-/* ─── Chat message types ────────────────────────────────────── */
-type ChatMsg = {
-  id: string;
-  role: 'user' | 'ai';
-  content: string;
-  sentiment?: string;
-  suggestions?: string[];
-  medReminders?: string[];
-  flagged?: boolean;
-  timestamp: Date;
-};
-
-/* ─── Agent action log ──────────────────────────────────────── */
-type AgentAction = {
-  id: string;
-  icon: React.ElementType;
-  label: string;
-  detail: string;
-  color: string;
-  delay: number;
-};
-
-type SimScenario = 'normal' | 'warning' | 'critical';
-
-/* ─── main page ─────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════ */
 export default function PatientProfilePage() {
   const params  = useParams();
   const router  = useRouter();
   const id      = Array.isArray(params.id) ? params.id[0] : params.id as string;
 
+  /* ── data ── */
   const [patient,     setPatient]     = useState<Patient | null>(null);
   const [readings,    setReadings]    = useState<HealthReading[]>([]);
   const [assessments, setAssessments] = useState<RiskAssessment[]>([]);
+  const [medData,     setMedData]     = useState<MedicationData | null>(null);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState<string | null>(null);
 
-  /* chat */
-  const [chatInput,   setChatInput]   = useState('');
-  const [chatHistory, setChatHistory] = useState<ChatMsg[]>([]);
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatEndRef  = useRef<HTMLDivElement>(null);
-  const chatInputRef= useRef<HTMLInputElement>(null);
+  /* ── edit biodata ── */
+  const [editing,     setEditing]    = useState(false);
+  const [editName,    setEditName]   = useState('');
+  const [editAge,     setEditAge]    = useState('');
+  const [editGender,  setEditGender] = useState('');
+  const [editCity,    setEditCity]   = useState('');
+  const [editState,   setEditState]  = useState('');
+  const [editCgName,  setEditCgName] = useState('');
+  const [editCgPhone, setEditCgPhone]= useState('');
+  const [editCgRel,   setEditCgRel]  = useState('');
+  const [saving,      setSaving]     = useState(false);
+  const [saveMsg,     setSaveMsg]    = useState('');
 
-  /* simulate */
-  const [simLoading,    setSimLoading]    = useState(false);
-  const [simResult,     setSimResult]     = useState<{ scenario: string; assessment: RiskAssessment; anomalies: string[] } | null>(null);
-  const [agentActions,  setAgentActions]  = useState<AgentAction[]>([]);
-  const [visibleActions,setVisibleActions]= useState<number>(0);
+  /* ── UX confirmations ── */
+  const [sosConfirm,  setSosConfirm]  = useState(false);
+  const [skipConfirm, setSkipConfirm] = useState<{ medId: string; medName: string; time: string } | null>(null);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [selectedReadingIdx, setSelectedReadingIdx] = useState(0);
+  const [medFilter, setMedFilter] = useState<'all' | 'due' | 'pending'>('all');
+  const [dailyChecklist, setDailyChecklist] = useState({
+    hydration: false,
+    walk: false,
+    breathing: false,
+  });
 
+  /* ── tick for med time status ── */
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 60000);
+    return () => clearInterval(iv);
+  }, []);
+
+  const today = new Date().toISOString().split('T')[0];
+
+  /* ── load data ── */
   useEffect(() => {
     if (!id) return;
+
+    // Guard: patient must only see their own page
+    const myId = readCookie('cs_patient_id');
+    if (myId && myId !== id) {
+      router.replace(`/patients/${myId}`);
+      return;
+    }
+
     setLoading(true);
     Promise.all([api.getPatient(id), api.getReadings(id, 20), api.getAssessments(id, 10)])
       .then(([p, r, a]) => { setPatient(p); setReadings(r); setAssessments(a); })
-      .catch((e)  => setError(e?.message || 'Failed to load patient data'))
+      .catch((e) => setError(e?.message || 'Failed to load'))
       .finally(() => setLoading(false));
-  }, [id]);
 
-  /* scroll chat to bottom */
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatHistory, chatLoading]);
+    api.getMedications(id).then(setMedData).catch(() => {});
+  }, [id, router]);
 
-  /* animate agent action log */
-  useEffect(() => {
-    if (agentActions.length === 0) { setVisibleActions(0); return; }
-    setVisibleActions(0);
-    agentActions.forEach((_, i) => {
-      setTimeout(() => setVisibleActions(i + 1), 600 * (i + 1));
-    });
-  }, [agentActions]);
+  /* ── edit helpers ── */
+  function openEdit() {
+    if (!patient) return;
+    setEditName(patient.name); setEditAge(String(patient.age)); setEditGender(patient.gender);
+    setEditCity(patient.location.city); setEditState(patient.location.state);
+    setEditCgName(patient.caregiver.name); setEditCgPhone(patient.caregiver.phone); setEditCgRel(patient.caregiver.relationship);
+    setEditing(true);
+  }
 
-  /* ── Loading ───────────────────────────────────────────────── */
+  async function saveEdit() {
+    if (!patient) return;
+    setSaving(true);
+    try {
+      const updated = await api.updatePatient(id, {
+        name: editName, age: parseInt(editAge), gender: editGender as 'male' | 'female',
+        location: { ...patient.location, city: editCity, state: editState },
+        caregiver: { ...patient.caregiver, name: editCgName, phone: editCgPhone, relationship: editCgRel },
+      });
+      setPatient(updated); setEditing(false); setSaveMsg('Saved!');
+      setTimeout(() => setSaveMsg(''), 3000);
+    } catch { setSaveMsg('Failed. Try again.'); }
+    finally { setSaving(false); }
+  }
+
+  /* ── medication helpers ── */
+  const handleLogMed = async (medId: string, medName: string, time: string, taken: boolean) => {
+    await api.logMedication(id, { medicationId: medId, medicationName: medName, scheduledTime: time, date: today, taken });
+    const fresh = await api.getMedications(id);
+    setMedData(fresh);
+  };
+
+  const isLogged = (medId: string, time: string): boolean | null => {
+    const log = medData?.todayLogs.find(l => l.medicationId === medId && l.scheduledTime === time);
+    return log ? log.taken : null;
+  };
+
+  /* ── loading / error ── */
   if (loading) return (
     <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-      <div className="w-12 h-12 border-4 border-brand-200 border-t-brand-500 rounded-full animate-spin" />
-      <p className="text-slate-500 dark:text-slate-400 text-sm font-medium">Loading patient profile…</p>
+      <div className="w-14 h-14 border-4 border-brand-200 border-t-brand-500 rounded-full animate-spin" />
+      <p className="text-slate-500 text-base font-medium">Loading your health profile…</p>
     </div>
   );
 
-  /* ── Error ─────────────────────────────────────────────────── */
   if (error || !patient) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-      <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-2xl p-8 max-w-md w-full text-center">
+    <div className="flex flex-col items-center justify-center min-h-[60vh]">
+      <div className="bg-red-50 border border-red-200 rounded-2xl p-8 max-w-md text-center">
         <AlertTriangle className="w-12 h-12 text-red-400 mx-auto mb-3" />
-        <h2 className="text-lg font-bold text-red-700 dark:text-red-400 mb-1">Patient Not Found</h2>
-        <p className="text-sm text-red-500 dark:text-red-400 mb-4">{error || 'This patient record does not exist.'}</p>
-        <button onClick={() => router.push('/')}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium hover:bg-brand-600 transition-colors">
-          <ChevronLeft className="w-4 h-4" /> Back to Dashboard
-        </button>
+        <h2 className="text-lg font-bold text-red-700 mb-2">Profile Not Found</h2>
+        <p className="text-sm text-red-500 mb-4">{error}</p>
+        <button onClick={() => router.push('/')} className="px-4 py-2 bg-brand-500 text-white rounded-lg text-sm font-medium">Go Back</button>
       </div>
     </div>
   );
 
   const latestReading    = readings[0] ?? null;
+  const activeReading    = readings[selectedReadingIdx] ?? latestReading;
   const latestAssessment = assessments[0] ?? null;
-  const historyRows      = readings.slice(0, 10);
   const firstName        = patient.name.split(' ')[0];
+  const riskScore        = latestAssessment?.riskScore ?? 0;
+  const riskLevel        = latestAssessment?.riskLevel ?? 'low';
+  const wellnessScore    = Math.max(0, 100 - riskScore);
+  const hour             = new Date().getHours();
+  const greeting         = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
 
-  /* ── Chat handler ──────────────────────────────────────────── */
-  async function handleChat(overrideMsg?: string) {
-    const msg = (overrideMsg ?? chatInput).trim();
-    if (!msg || chatLoading) return;
-    const userMsg: ChatMsg = { id: Date.now().toString(), role: 'user', content: msg, timestamp: new Date() };
-    setChatHistory((h) => [...h, userMsg]);
-    setChatInput('');
-    setChatLoading(true);
-    try {
-      const res: CompanionResponse = await api.chat(id, msg);
-      const aiMsg: ChatMsg = {
-        id: Date.now().toString() + '-ai',
-        role: 'ai',
-        content: res.response,
-        sentiment: res.sentiment,
-        suggestions: res.followUpSuggestions,
-        medReminders: res.medicationReminders,
-        flagged: res.flaggedForCaregiver,
-        timestamp: new Date(),
-      };
-      setChatHistory((h) => [...h, aiMsg]);
-    } catch {
-      setChatHistory((h) => [...h, {
-        id: Date.now().toString() + '-err',
-        role: 'ai',
-        content: 'Sorry, the AI companion is temporarily unavailable.',
-        timestamp: new Date(),
-      }]);
-    } finally {
-      setChatLoading(false);
-    }
-  }
-
-  /* ── Simulate handler ──────────────────────────────────────── */
-  async function handleSimulate(scenario: SimScenario) {
-    setSimLoading(true);
-    setSimResult(null);
-    setAgentActions([]);
-    try {
-      const res = await api.simulate(id, scenario) as { scenario: string; assessment: RiskAssessment; anomalies: string[] };
-      setSimResult(res);
-      await Promise.all([api.getReadings(id, 20), api.getAssessments(id, 10)])
-        .then(([r, a]) => { setReadings(r); setAssessments(a); });
-
-      /* Build agent action log */
-      if (scenario === 'critical' || res.assessment.riskLevel === 'high') {
-        const actions: AgentAction[] = [
-          { id: '1', icon: Brain,    label: 'Gemini 2.5 Flash — Risk Assessment',   detail: `Score ${res.assessment.riskScore}/100 — HIGH risk detected`, color: 'text-brand-500', delay: 0 },
-          { id: '2', icon: FileText, label: 'Medical Summary Generated',             detail: `${res.assessment.reasons.slice(0,2).join('; ')}`,             color: 'text-purple-500', delay: 1 },
-          { id: '3', icon: BellRing, label: `Caregiver Alerted — ${patient?.caregiver.name ?? 'Caregiver'}`, detail: `${patient?.caregiver.relationship ?? ''} · ${patient?.caregiver.phone ?? ''}`, color: 'text-amber-500', delay: 2 },
-          { id: '4', icon: Hospital, label: 'Nearest Hospital Identified',           detail: `Hospital Kerajaan — ${patient?.location.city ?? 'Nearby'}`,   color: 'text-teal-500', delay: 3 },
-          { id: '5', icon: Siren,    label: 'Emergency Protocol Activated',          detail: 'Monitoring frequency increased to every 60 seconds',          color: 'text-red-500', delay: 4 },
-        ];
-        setAgentActions(actions);
-      } else if (scenario === 'warning' || res.assessment.riskLevel === 'medium') {
-        const actions: AgentAction[] = [
-          { id: '1', icon: Brain,    label: 'Gemini 2.5 Flash — Risk Assessment',   detail: `Score ${res.assessment.riskScore}/100 — MEDIUM risk`, color: 'text-brand-500', delay: 0 },
-          { id: '2', icon: FileText, label: 'Health Advisory Generated',             detail: res.assessment.recommendations[0] || 'Monitoring closely', color: 'text-purple-500', delay: 1 },
-          { id: '3', icon: BellRing, label: 'Caregiver Notification Queued',         detail: 'Will escalate if vitals worsen in next 2 hours',        color: 'text-amber-500', delay: 2 },
-        ];
-        setAgentActions(actions);
-      } else {
-        const actions: AgentAction[] = [
-          { id: '1', icon: Brain,       label: 'Gemini 2.5 Flash — Risk Assessment', detail: `Score ${res.assessment.riskScore}/100 — LOW risk`, color: 'text-brand-500', delay: 0 },
-          { id: '2', icon: CheckCircle2,label: 'All Vitals Within Normal Range',      detail: 'No agent actions required',                        color: 'text-green-500', delay: 1 },
-        ];
-        setAgentActions(actions);
-      }
-    } catch {
-      // silent
-    } finally {
-      setSimLoading(false);
-    }
-  }
-
-  const simColors: Record<string, string> = {
-    normal:   'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50 text-green-800 dark:text-green-300',
-    warning:  'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50 text-amber-800 dark:text-amber-300',
-    critical: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50 text-red-800 dark:text-red-300',
-  };
-
-  /* ════════════════════════════════════════════════════════════ */
   return (
-    <div className="space-y-6 animate-fade-in pb-12">
+    <div className="space-y-6 animate-fade-in pb-16 max-w-2xl mx-auto">
 
-      {/* ── HEADER ─────────────────────────────────────────────── */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <button onClick={() => router.back()}
-          className="inline-flex items-center gap-1.5 text-sm text-slate-500 dark:text-slate-400 hover:text-brand-600 dark:hover:text-brand-400 transition-colors font-medium">
-          <ChevronLeft className="w-4 h-4" /> Back
-        </button>
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 truncate">{patient.name}</h1>
-          {latestAssessment && <RiskBadge level={latestAssessment.riskLevel} score={latestAssessment.riskScore} size="lg" />}
+      {/* ── GREETING ─────────────────────────────────────────── */}
+      <div className="bg-gradient-to-r from-brand-500 to-teal-500 rounded-3xl p-7 text-white relative overflow-hidden">
+        <div className="absolute inset-0 opacity-10">
+          {[...Array(3)].map((_, i) => (
+            <div key={i} className="absolute rounded-full border-2 border-white"
+              style={{ width: `${(i+1)*180}px`, height:`${(i+1)*180}px`, top:'-40%', right:'-5%' }} />
+          ))}
         </div>
-      </div>
-
-      {/* ── WHO IS THIS PATIENT? ─────────────────────────────────── */}
-      <div className="bg-gradient-to-r from-brand-50 to-teal-50 dark:from-brand-900/20 dark:to-teal-900/20 border border-brand-100 dark:border-brand-800/30 rounded-2xl p-4 flex flex-wrap items-center gap-4">
-        <div className="flex items-center gap-3">
-          <Stethoscope className="w-5 h-5 text-brand-500 shrink-0" />
+        <div className="relative flex items-center justify-between gap-4">
           <div>
-            <p className="text-xs font-bold text-brand-700 dark:text-brand-300 uppercase tracking-wider">Monitored by CareSphere AI</p>
-            <p className="text-xs text-slate-600 dark:text-slate-400">
-              This profile is actively monitored by healthcare providers & family caregivers. Alerts are sent automatically when vitals are abnormal.
+            <p className="text-white/80 text-base">{greeting},</p>
+            <h1 className="text-3xl font-bold mt-0.5">{firstName}</h1>
+            <p className="text-white/80 text-base mt-2 leading-snug">
+              {riskLevel === 'low'
+                ? 'Your health looks great today!'
+                : riskLevel === 'medium'
+                ? 'Some things need your attention.'
+                : 'Please call your doctor or caregiver.'}
             </p>
           </div>
-        </div>
-        <div className="flex items-center gap-2 ml-auto flex-wrap">
-          <span className="flex items-center gap-1.5 text-xs font-semibold text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/30 border border-teal-200 dark:border-teal-800/50 px-2.5 py-1 rounded-lg">
-            <span className="w-1.5 h-1.5 rounded-full bg-teal-500 animate-pulse" /> Live Monitoring
-          </span>
-          <span className="text-xs text-slate-500 dark:text-slate-400">{readings.length} readings recorded</span>
+          <div className="text-center shrink-0">
+            <div className="w-20 h-20 rounded-full bg-white/20 border-2 border-white/50 flex flex-col items-center justify-center">
+              <p className="text-2xl font-bold leading-none">{wellnessScore}</p>
+              <p className="text-xs text-white/70 mt-0.5">wellness</p>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* ── TOP ROW: Profile + Vitals ─────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr] gap-6">
-
-        {/* PROFILE CARD */}
-        <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card p-6 space-y-5">
-          <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-brand-500 to-teal-400 flex items-center justify-center text-white text-2xl font-bold shrink-0 shadow-sm">
-              {patient.name.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">{patient.name}</h2>
-              <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
-                <User className="w-3.5 h-3.5" /> {patient.age} yrs · {patient.gender}
-              </p>
-              <p className="text-sm text-slate-500 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
-                <MapPin className="w-3.5 h-3.5 text-brand-400" /> {patient.location.city}, {patient.location.state}
-              </p>
-            </div>
-          </div>
-
-          {patient.conditions.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <Stethoscope className="w-3.5 h-3.5" /> Medical Conditions
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {patient.conditions.map((c) => <ConditionPill key={c} color="teal">{c}</ConditionPill>)}
-              </div>
-            </div>
-          )}
-
-          {patient.medications.length > 0 && (
-            <div>
-              <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <Pill className="w-3.5 h-3.5" /> Current Medications
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {patient.medications.map((m) => <ConditionPill key={m} color="purple">{m}</ConditionPill>)}
-              </div>
-            </div>
-          )}
-
-          <div className="bg-slate-50 dark:bg-slate-700/50 rounded-xl p-4 border border-slate-100 dark:border-slate-600">
-            <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5" /> Emergency Contact
-            </p>
-            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">{patient.caregiver.name}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{patient.caregiver.relationship}</p>
-            <a href={`tel:${patient.caregiver.phone}`}
-              className="mt-2 inline-flex items-center gap-1.5 text-xs text-brand-600 dark:text-brand-400 hover:text-brand-700 font-medium transition-colors">
-              <Phone className="w-3.5 h-3.5" /> {patient.caregiver.phone}
-            </a>
-          </div>
+      {/* ── DAILY CARE CHECKLIST (interactive) ───────────────── */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border-2 border-slate-200 dark:border-slate-700 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <Sparkles className="w-5 h-5 text-amber-500" />
+          <h2 className="text-lg font-bold text-slate-800 dark:text-slate-200">Today's Self-Care Checklist</h2>
         </div>
-
-        {/* VITALS + RISK */}
-        <div className="space-y-5">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card p-5">
-            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-brand-500" /> Latest Vitals
-              {latestReading && (
-                <span className="ml-auto text-xs text-slate-400 dark:text-slate-500 font-normal">
-                  {format(new Date(latestReading.timestamp), 'MMM d, yyyy HH:mm')}
-                </span>
-              )}
-            </h3>
-            {latestReading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <VitalCard icon={Heart}       label="Heart Rate"      value={`${latestReading.heartRate}`}                                               unit="bpm"  alert={isAbnormalHR(latestReading.heartRate)} />
-                <VitalCard icon={Activity}    label="Blood Pressure"  value={`${latestReading.bloodPressure.systolic}/${latestReading.bloodPressure.diastolic}`} unit="mmHg" alert={isAbnormalBP(latestReading.bloodPressure.systolic)} />
-                <VitalCard icon={Wind}        label="SpO₂"            value={`${latestReading.oxygenSaturation.toFixed(1)}`}                             unit="%"    alert={isAbnormalO2(latestReading.oxygenSaturation)} />
-                <VitalCard icon={Moon}        label="Sleep"           value={`${latestReading.sleepHours.toFixed(1)}`}                                   unit="hrs"  alert={isAbnormalSleep(latestReading.sleepHours)} />
-                <VitalCard icon={Zap}         label="Movement"        value={`${latestReading.movementScore.toFixed(0)}`}                                unit="/100" alert={false} />
-                <VitalCard icon={Thermometer} label="Temperature"     value={`${latestReading.temperature.toFixed(1)}`}                                  unit="°C"   alert={isAbnormalTemp(latestReading.temperature)} />
-              </div>
-            ) : (
-              <div className="text-center py-8 text-slate-400 dark:text-slate-500 text-sm bg-slate-50 dark:bg-slate-700/50 rounded-xl">No readings available</div>
-            )}
-          </div>
-
-          {latestAssessment && (
-            <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card p-5">
-              <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-4 flex items-center gap-2">
-                <FileText className="w-4 h-4 text-brand-500" /> Latest Risk Assessment
-                <span className="ml-auto text-xs text-slate-400 dark:text-slate-500 font-normal">
-                  {format(new Date(latestAssessment.timestamp), 'MMM d, yyyy HH:mm')}
-                </span>
-              </h3>
-              <div className="flex items-center gap-4 mb-4">
-                <RiskBadge level={latestAssessment.riskLevel} score={latestAssessment.riskScore} size="lg" />
-                <div className="flex-1">
-                  <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 mb-1">
-                    <span>Risk Score</span>
-                    <span className="font-semibold text-slate-800 dark:text-slate-200">{latestAssessment.riskScore}/100</span>
-                  </div>
-                  <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-700 ${latestAssessment.riskLevel === 'high' ? 'bg-red-500' : latestAssessment.riskLevel === 'medium' ? 'bg-amber-400' : 'bg-green-500'}`}
-                      style={{ width: `${latestAssessment.riskScore}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {latestAssessment.reasons.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-red-500 uppercase tracking-wider mb-2 flex items-center gap-1">
-                      <AlertTriangle className="w-3.5 h-3.5" /> Risk Factors
-                    </p>
-                    <ul className="space-y-1">
-                      {latestAssessment.reasons.map((r, i) => (
-                        <li key={i} className="text-xs text-slate-600 dark:text-slate-400 flex items-start gap-1.5">
-                          <span className="text-red-400 mt-0.5 shrink-0">•</span> {r}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {latestAssessment.recommendations.length > 0 && (
-                  <div>
-                    <p className="text-xs font-semibold text-green-600 dark:text-green-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Recommendations
-                    </p>
-                    <ul className="space-y-1">
-                      {latestAssessment.recommendations.map((r, i) => (
-                        <li key={i} className="text-xs text-slate-600 dark:text-slate-400 flex items-start gap-1.5">
-                          <span className="text-green-500 mt-0.5 shrink-0">✓</span> {r}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-              {latestAssessment.geminiReasoning && (
-                <div className="mt-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/30 rounded-xl p-4">
-                  <p className="text-[10px] font-bold text-brand-600 dark:text-brand-400 uppercase tracking-wider mb-1.5">
-                    ✦ Gemini 2.5 Flash AI Reasoning
-                  </p>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{latestAssessment.geminiReasoning}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── SCENARIO SIMULATOR + AGENT ACTION LOG ─────────────── */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card p-6">
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-1 flex items-center gap-2">
-          <Bot className="w-4 h-4 text-brand-500" /> Autonomous AI Agent — Scenario Simulator
-        </h3>
-        <p className="text-xs text-slate-400 dark:text-slate-500 mb-4">
-          Trigger a health scenario and watch CareSphere AI autonomously assess, alert, and act — no human input needed.
-        </p>
-
-        <div className="flex gap-3 flex-wrap mb-5">
-          {(['normal', 'warning', 'critical'] as SimScenario[]).map((scenario) => {
-            const styles = {
-              normal:   'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800/50 text-green-700 dark:text-green-400 hover:bg-green-100',
-              warning:  'bg-amber-50 dark:bg-amber-900/20 border-amber-200 dark:border-amber-800/50 text-amber-700 dark:text-amber-400 hover:bg-amber-100',
-              critical: 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-400 hover:bg-red-100',
-            };
-            const icons = {
-              normal:   <CheckCircle2 className="w-4 h-4" />,
-              warning:  <AlertTriangle className="w-4 h-4" />,
-              critical: <Siren className="w-4 h-4" />,
-            };
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          {[
+            { key: 'hydration', label: 'Drank enough water' },
+            { key: 'walk', label: '10-30 min walk' },
+            { key: 'breathing', label: 'Breathing exercise' },
+          ].map((item) => {
+            const checked = dailyChecklist[item.key as keyof typeof dailyChecklist];
             return (
-              <button key={scenario} onClick={() => handleSimulate(scenario)} disabled={simLoading}
-                className={`flex items-center gap-2 px-5 py-2.5 rounded-xl border text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${styles[scenario]}`}>
-                {simLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : icons[scenario]}
-                {scenario.charAt(0).toUpperCase() + scenario.slice(1)} Scenario
+              <button
+                key={item.key}
+                onClick={() =>
+                  setDailyChecklist((prev) => ({ ...prev, [item.key]: !prev[item.key as keyof typeof prev] }))
+                }
+                className={`text-left rounded-xl px-3 py-3 border transition-all ${
+                  checked
+                    ? 'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700'
+                    : 'bg-slate-50 dark:bg-slate-700/40 border-slate-200 dark:border-slate-600 hover:border-brand-300'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <CircleCheckBig className={`w-4 h-4 ${checked ? 'text-green-600' : 'text-slate-400'}`} />
+                  <span className={`text-sm font-medium ${checked ? 'text-green-700 dark:text-green-300' : 'text-slate-700 dark:text-slate-300'}`}>
+                    {item.label}
+                  </span>
+                </div>
               </button>
             );
           })}
         </div>
+      </div>
 
-        {/* Agent Action Log */}
-        {agentActions.length > 0 && (
-          <div className="border border-slate-200 dark:border-slate-600 rounded-xl overflow-hidden">
-            <div className="bg-slate-50 dark:bg-slate-700/50 px-4 py-2.5 border-b border-slate-200 dark:border-slate-600 flex items-center gap-2">
-              <Bot className="w-4 h-4 text-brand-500" />
-              <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider">Agent Action Log</p>
-              <span className="ml-auto text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1">
-                <Clock className="w-3 h-3" /> {new Date().toLocaleTimeString()}
-              </span>
-            </div>
-            <div className="divide-y divide-slate-100 dark:divide-slate-700">
-              {agentActions.slice(0, visibleActions).map((action) => {
-                const Icon = action.icon;
-                return (
-                  <div key={action.id} className="flex items-start gap-3 px-4 py-3 animate-slide-up">
-                    <div className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center shrink-0 mt-0.5">
-                      <Icon className={`w-3.5 h-3.5 ${action.color}`} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{action.label}</p>
-                      <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{action.detail}</p>
-                    </div>
-                    <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0 mt-0.5" />
-                  </div>
-                );
-              })}
-              {visibleActions < agentActions.length && (
-                <div className="px-4 py-3 flex items-center gap-2">
-                  <div className="w-4 h-4 border-2 border-brand-300 border-t-brand-600 rounded-full animate-spin" />
-                  <p className="text-xs text-slate-400 dark:text-slate-500">Agent processing…</p>
-                </div>
-              )}
-            </div>
+      {/* ── EMERGENCY SOS ─────────────────────────────────────── */}
+      {!sosConfirm ? (
+        <button
+          onClick={() => setSosConfirm(true)}
+          className="flex items-center justify-center gap-3 w-full py-5 rounded-2xl bg-red-500 hover:bg-red-600 active:scale-95 text-white font-bold text-xl transition-all shadow-lg shadow-red-200 dark:shadow-red-900/40">
+          <PhoneCall className="w-7 h-7" />
+          Emergency — Call {patient.caregiver.name}
+        </button>
+      ) : (
+        <div className="rounded-2xl border-2 border-red-400 bg-red-50 dark:bg-red-900/20 p-5 space-y-3">
+          <p className="text-center text-lg font-bold text-red-700 dark:text-red-300">
+            Call {patient.caregiver.name}?
+          </p>
+          <p className="text-center text-base text-red-500">{patient.caregiver.phone} · {patient.caregiver.relationship}</p>
+          <div className="flex gap-3">
+            <a href={`tel:${patient.caregiver.phone}`}
+              onClick={() => setSosConfirm(false)}
+              className="flex-1 flex items-center justify-center gap-2 py-4 rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold text-lg transition-all active:scale-95">
+              <PhoneCall className="w-6 h-6" /> Yes, Call Now
+            </a>
+            <button onClick={() => setSosConfirm(false)}
+              className="flex-1 py-4 rounded-xl border-2 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 font-semibold text-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-all">
+              Cancel
+            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* Sim result summary */}
-        {simResult && (
-          <div className={`mt-3 border rounded-xl p-3 text-xs font-medium ${simColors[simResult.scenario] ?? 'bg-slate-50 dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-300'}`}>
-            ✦ Scenario complete — Risk Level: {simResult.assessment.riskLevel.toUpperCase()} · Score: {simResult.assessment.riskScore}/100
-            {simResult.anomalies.length > 0 && ` · ${simResult.anomalies.length} anomaly detected`}
+      {/* ── AI COMPANION SHORTCUT ─────────────────────────────── */}
+      <Link href="/companion"
+        className="flex items-center gap-4 w-full p-5 rounded-2xl bg-violet-50 dark:bg-violet-900/20 border-2 border-violet-200 dark:border-violet-700 hover:bg-violet-100 dark:hover:bg-violet-900/30 active:scale-95 transition-all">
+        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shrink-0">
+          <Brain className="w-6 h-6 text-white" />
+        </div>
+        <div className="flex-1">
+          <p className="text-lg font-bold text-violet-800 dark:text-violet-300">Chat with AI Companion</p>
+          <p className="text-sm text-violet-600 dark:text-violet-400">Ask about your health, get reminders &amp; advice</p>
+        </div>
+        <span className="text-violet-400 text-2xl">›</span>
+      </Link>
+
+      {/* ── TODAY'S MEDICATIONS ───────────────────────────────── */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border-2 border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="px-6 py-4 border-b-2 border-slate-100 dark:border-slate-700 flex items-center gap-3">
+          <Pill className="w-6 h-6 text-brand-500" />
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">Today's Medications</h2>
+        </div>
+
+        {!medData || medData.medications.length === 0 ? (
+          <div className="p-8 text-center">
+            <Pill className="w-12 h-12 text-slate-200 dark:text-slate-600 mx-auto mb-3" />
+            <p className="text-base text-slate-400">No medications scheduled</p>
+          </div>
+        ) : (
+          <div className="p-4 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => setMedFilter('all')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                  medFilter === 'all'
+                    ? 'bg-brand-500 text-white border-brand-500'
+                    : 'border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-300'
+                }`}
+              >
+                All
+              </button>
+              <button
+                onClick={() => setMedFilter('due')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                  medFilter === 'due'
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-300'
+                }`}
+              >
+                Due now
+              </button>
+              <button
+                onClick={() => setMedFilter('pending')}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                  medFilter === 'pending'
+                    ? 'bg-violet-500 text-white border-violet-500'
+                    : 'border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-300'
+                }`}
+              >
+                Pending
+              </button>
+            </div>
+            {medData.medications.map(med => (
+              <div key={med.id} className="rounded-xl border-2 border-slate-100 dark:border-slate-700 overflow-hidden">
+                {/* Med header */}
+                <div className="bg-slate-50 dark:bg-slate-700/50 px-4 py-3 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-brand-100 dark:bg-brand-900/30 flex items-center justify-center shrink-0">
+                    <Pill className="w-5 h-5 text-brand-600" />
+                  </div>
+                  <div>
+                    <p className="text-base font-bold text-slate-800 dark:text-slate-200">{med.name}</p>
+                    <p className="text-sm text-slate-500 dark:text-slate-400">{med.dosage}</p>
+                  </div>
+                </div>
+
+                {/* Dose times */}
+                {med.times.map(time => {
+                  const status     = isLogged(med.id, time);
+                  const timeStatus = getMedStatus(time);
+                  const isDue      = timeStatus === 'due';
+                  const showDose =
+                    medFilter === 'all' ||
+                    (medFilter === 'due' && isDue && status === null) ||
+                    (medFilter === 'pending' && status === null);
+
+                  if (!showDose) return null;
+
+                  return (
+                    <div key={time} className={`px-4 py-3 flex items-center gap-3 border-t-2 border-slate-100 dark:border-slate-700 ${isDue && status === null ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}>
+                      {/* Time label */}
+                      <div className="text-center w-14 shrink-0">
+                        <p className="text-lg font-bold text-slate-700 dark:text-slate-300 font-mono">{time}</p>
+                        {isDue && status === null && (
+                          <span className="text-[10px] font-bold text-amber-600 bg-amber-100 dark:bg-amber-900/30 px-1 rounded">DUE NOW</span>
+                        )}
+                        {timeStatus === 'upcoming' && status === null && (
+                          <span className="text-[10px] text-slate-400">upcoming</span>
+                        )}
+                      </div>
+
+                      {/* Status text */}
+                      <div className="flex-1">
+                        {status === true  && <p className="text-base font-semibold text-green-600">Taken</p>}
+                        {status === false && <p className="text-base font-semibold text-red-500">Skipped</p>}
+                        {status === null && isDue            && <p className="text-base font-semibold text-amber-600">Time to take!</p>}
+                        {status === null && timeStatus === 'upcoming' && <p className="text-base text-slate-400">Upcoming</p>}
+                        {status === null && timeStatus === 'passed'   && <p className="text-base text-slate-400">Missed</p>}
+                      </div>
+
+                      {/* Action buttons */}
+                      {status === null && skipConfirm?.medId === med.id && skipConfirm?.time === time ? (
+                        <div className="flex gap-2 shrink-0 items-center">
+                          <p className="text-xs text-slate-500 dark:text-slate-400">Skip this dose?</p>
+                          <button onClick={() => { handleLogMed(med.id, med.name, time, false); setSkipConfirm(null); }}
+                            className="px-3 py-1.5 rounded-lg bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 text-sm font-bold hover:bg-red-200 active:scale-95 transition-all">
+                            Yes, Skip
+                          </button>
+                          <button onClick={() => setSkipConfirm(null)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-sm font-bold hover:bg-slate-200 active:scale-95 transition-all">
+                            No
+                          </button>
+                        </div>
+                      ) : status === null ? (
+                        <div className="flex gap-2 shrink-0">
+                          <button onClick={() => handleLogMed(med.id, med.name, time, true)}
+                            className="px-4 py-2.5 rounded-xl bg-green-500 text-white text-sm font-bold hover:bg-green-600 active:scale-95 transition-all min-w-[80px]">
+                            Taken
+                          </button>
+                          <button onClick={() => setSkipConfirm({ medId: med.id, medName: med.name, time })}
+                            className="px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 text-sm hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-95 transition-all">
+                            Skip
+                          </button>
+                        </div>
+                      ) : (
+                        <button onClick={() => handleLogMed(med.id, med.name, time, !status)}
+                          className="text-xs text-slate-400 hover:text-slate-600 underline shrink-0 py-1 px-2">Undo</button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            {/* Today's summary */}
+            {medData.adherence.total > 0 && (
+              <div className={`rounded-xl p-4 text-center ${
+                medData.adherence.rate >= 80
+                  ? 'bg-green-50 dark:bg-green-900/20 border-2 border-green-200'
+                  : 'bg-amber-50 dark:bg-amber-900/20 border-2 border-amber-200'
+              }`}>
+                <p className={`text-2xl font-bold ${medData.adherence.rate >= 80 ? 'text-green-700' : 'text-amber-700'}`}>
+                  {medData.adherence.taken}/{medData.adherence.total} doses today
+                </p>
+                <p className={`text-sm mt-0.5 ${medData.adherence.rate >= 80 ? 'text-green-600' : 'text-amber-600'}`}>
+                  {medData.adherence.rate >= 80 ? 'Great job today!' : 'Please take your remaining medications'}
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* ── AI COMPANION CHAT ───────────────────────────────────── */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2 bg-gradient-to-r from-brand-50 to-teal-50 dark:from-brand-900/20 dark:to-teal-900/20">
-          <MessageCircle className="w-4 h-4 text-brand-500" />
-          <div>
-            <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">AI Companion Chat — {firstName}</h3>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">Powered by Gemini 2.5 Flash · Context-aware with {firstName}'s real vitals & medical history</p>
-          </div>
+      {/* ── MY VITALS ─────────────────────────────────────────── */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border-2 border-slate-200 dark:border-slate-700 p-5">
+        <div className="flex items-center gap-3 mb-5">
+          <Activity className="w-6 h-6 text-brand-500" />
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">My Vitals</h2>
+          {activeReading && (
+            <span className="ml-auto text-sm text-slate-400">{format(new Date(activeReading.timestamp), 'MMM d, HH:mm')}</span>
+          )}
         </div>
-
-        {/* Chat messages */}
-        <div className="h-72 overflow-y-auto p-4 space-y-3 bg-slate-50/50 dark:bg-slate-900/30">
-          {chatHistory.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-              <Bot className="w-10 h-10 text-slate-300 dark:text-slate-600" />
-              <p className="text-sm text-slate-400 dark:text-slate-500">Start a conversation with {firstName}'s AI companion</p>
-              <div className="flex flex-wrap gap-2 justify-center mt-1">
-                {[`I feel tired today`, `How is my blood pressure?`, `Remind me my medications`].map((s) => (
-                  <button key={s} onClick={() => handleChat(s)}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-brand-200 dark:border-slate-600 text-brand-700 dark:text-brand-300 hover:bg-brand-50 dark:hover:bg-slate-600 transition-colors">
-                    {s}
+        {activeReading ? (
+          <div className="grid grid-cols-2 gap-3">
+            <VitalCard icon={Heart}       label="Heart Rate"     value={`${activeReading.heartRate}`} unit="bpm"
+              alert={isAbnormalHR(activeReading.heartRate)}
+              friendlyLabel={isAbnormalHR(activeReading.heartRate) ? 'Irregular — rest now' : 'Normal'}
+              tip={isAbnormalHR(activeReading.heartRate) ? 'Rest and avoid stress' : 'Heart rate is healthy'} />
+            <VitalCard icon={Activity}    label="Blood Pressure" value={`${activeReading.bloodPressure.systolic}/${activeReading.bloodPressure.diastolic}`} unit="mmHg"
+              alert={isAbnormalBP(activeReading.bloodPressure.systolic)}
+              friendlyLabel={isAbnormalBP(activeReading.bloodPressure.systolic) ? 'High — reduce salt' : 'Normal'}
+              tip={isAbnormalBP(activeReading.bloodPressure.systolic) ? 'Rest and drink water' : 'Under control'} />
+            <VitalCard icon={Wind}        label="Blood Oxygen"   value={`${activeReading.oxygenSaturation.toFixed(1)}`} unit="%"
+              alert={isAbnormalO2(activeReading.oxygenSaturation)}
+              friendlyLabel={isAbnormalO2(activeReading.oxygenSaturation) ? 'Low — breathe slowly' : 'Normal'} />
+            <VitalCard icon={Moon}        label="Last Sleep"     value={`${activeReading.sleepHours.toFixed(1)}`} unit="hrs"
+              alert={isAbnormalSleep(activeReading.sleepHours)}
+              friendlyLabel={isAbnormalSleep(activeReading.sleepHours) ? 'Too little sleep' : 'Good sleep'} />
+            <VitalCard icon={Thermometer} label="Temperature"    value={`${activeReading.temperature.toFixed(1)}`} unit="°C"
+              alert={isAbnormalTemp(activeReading.temperature)}
+              friendlyLabel={isAbnormalTemp(activeReading.temperature) ? 'Slight fever — rest' : 'Normal'} />
+            <VitalCard icon={Zap}         label="Activity"       value={`${activeReading.movementScore.toFixed(0)}`} unit="/100"
+              alert={false}
+              friendlyLabel={activeReading.movementScore >= 50 ? 'Active — good job' : 'Try a short walk'}
+              tip="Aim for a 30 min walk daily" />
+          </div>
+        ) : (
+          <div className="text-center py-10 text-slate-400 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+            <Activity className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+            <p className="text-base">No readings yet — your device will sync automatically</p>
+          </div>
+        )}
+        {readings.length > 1 && (
+          <div className="mt-4 border-t border-slate-100 dark:border-slate-700 pt-3">
+            <button
+              onClick={() => setShowTimeline((v) => !v)}
+              className="w-full flex items-center justify-between text-sm font-semibold text-slate-600 dark:text-slate-300"
+            >
+              <span className="flex items-center gap-2"><Clock3 className="w-4 h-4" /> View recent vitals timeline</span>
+              <ChevronDown className={`w-4 h-4 transition-transform ${showTimeline ? 'rotate-180' : ''}`} />
+            </button>
+            {showTimeline && (
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {readings.slice(0, 8).map((r, idx) => (
+                  <button
+                    key={r.id}
+                    onClick={() => setSelectedReadingIdx(idx)}
+                    className={`text-left rounded-xl border px-3 py-2 transition-colors ${
+                      idx === selectedReadingIdx
+                        ? 'border-brand-400 bg-brand-50 dark:bg-brand-900/20'
+                        : 'border-slate-200 dark:border-slate-600 hover:border-brand-300'
+                    }`}
+                  >
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{format(new Date(r.timestamp), 'MMM d, HH:mm')}</p>
+                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 mt-0.5">
+                      HR {r.heartRate} bpm · O2 {r.oxygenSaturation.toFixed(1)}%
+                    </p>
                   </button>
                 ))}
               </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── HEALTH STATUS ─────────────────────────────────────── */}
+      {latestAssessment && (
+        <div className={`rounded-2xl border-2 p-5 ${
+          riskLevel === 'high'   ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700' :
+          riskLevel === 'medium' ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700' :
+          'bg-green-50 dark:bg-green-900/20 border-green-300 dark:border-green-700'
+        }`}>
+          <div className="flex items-center gap-3 mb-4">
+            <Shield className={`w-6 h-6 ${riskLevel === 'high' ? 'text-red-500' : riskLevel === 'medium' ? 'text-amber-500' : 'text-green-500'}`} />
+            <h2 className={`text-xl font-bold ${riskLevel === 'high' ? 'text-red-700 dark:text-red-300' : riskLevel === 'medium' ? 'text-amber-700 dark:text-amber-300' : 'text-green-700 dark:text-green-300'}`}>
+              {riskLevel === 'high' ? 'Health Alert' : riskLevel === 'medium' ? 'Watch These' : 'All Looking Good'}
+            </h2>
+          </div>
+          {latestAssessment.recommendations.length > 0 && (
+            <ul className="space-y-2">
+              {latestAssessment.recommendations.map((r, i) => (
+                <li key={i} className={`text-base flex items-start gap-2 ${riskLevel === 'high' ? 'text-red-700 dark:text-red-300' : riskLevel === 'medium' ? 'text-amber-700 dark:text-amber-300' : 'text-green-700 dark:text-green-300'}`}>
+                  <CheckCircle2 className="w-5 h-5 mt-0.5 shrink-0" /> {r}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* ── MY PROFILE (editable) ─────────────────────────────── */}
+      <div className="bg-white dark:bg-slate-800 rounded-2xl border-2 border-slate-200 dark:border-slate-700 p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <User className="w-6 h-6 text-brand-500" />
+            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-200">My Profile</h2>
+          </div>
+          {!editing ? (
+            <button onClick={openEdit}
+              className="flex items-center gap-2 text-sm font-semibold text-brand-600 dark:text-brand-400 border border-brand-200 dark:border-brand-800/50 px-4 py-2 rounded-xl hover:bg-brand-50 dark:hover:bg-brand-900/20 transition-colors">
+              <Edit3 className="w-4 h-4" /> Edit
+            </button>
+          ) : (
+            <div className="flex gap-2">
+              <button onClick={() => setEditing(false)} className="flex items-center gap-1 text-sm text-slate-500 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-600 hover:bg-slate-50">
+                <X className="w-4 h-4" /> Cancel
+              </button>
+              <button onClick={saveEdit} disabled={saving}
+                className="flex items-center gap-1 text-sm text-white bg-brand-500 hover:bg-brand-600 disabled:opacity-60 px-4 py-2 rounded-xl">
+                <Save className="w-4 h-4" /> {saving ? 'Saving…' : 'Save'}
+              </button>
             </div>
           )}
-          {chatHistory.map((msg) => (
-            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              {msg.role === 'ai' && (
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-brand-500 to-teal-400 flex items-center justify-center text-white shrink-0 mr-2 mt-1">
-                  <Bot className="w-3.5 h-3.5" />
-                </div>
-              )}
-              <div className={`max-w-[80%] ${msg.role === 'user' ? 'chat-bubble-user px-4 py-2.5' : 'chat-bubble-ai px-4 py-3'}`}>
-                <p className="text-sm leading-relaxed">{msg.content}</p>
-                {msg.role === 'ai' && msg.medReminders && msg.medReminders.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-blue-100 dark:border-slate-600">
-                    {msg.medReminders.map((r, i) => (
-                      <p key={i} className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
-                        <Pill className="w-3 h-3" /> {r}
-                      </p>
-                    ))}
-                  </div>
-                )}
-                {msg.role === 'ai' && msg.flagged && (
-                  <p className="text-[10px] text-red-600 dark:text-red-400 font-semibold mt-1.5 flex items-center gap-1">
-                    <AlertTriangle className="w-3 h-3" /> Caregiver has been notified
-                  </p>
-                )}
-                {msg.role === 'ai' && msg.suggestions && msg.suggestions.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mt-2">
-                    {msg.suggestions.map((s, i) => (
-                      <button key={i} onClick={() => handleChat(s)}
-                        className="text-[11px] px-2 py-0.5 rounded-md bg-white dark:bg-slate-700 border border-brand-200 dark:border-slate-600 text-brand-700 dark:text-brand-300 hover:bg-brand-50 transition-colors">
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <p className="text-[10px] text-right mt-1 opacity-50">
-                  {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </div>
+
+        {saveMsg && (
+          <div className={`mb-4 text-sm px-4 py-2.5 rounded-xl ${saveMsg.includes('Failed') ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+            {saveMsg}
+          </div>
+        )}
+
+        {!editing ? (
+          <div className="space-y-5">
+            <div className="flex items-center gap-5">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-500 to-teal-400 flex items-center justify-center text-white text-3xl font-bold shrink-0">
+                {patient.name.charAt(0).toUpperCase()}
+              </div>
+              <div>
+                <h3 className="text-xl font-bold text-slate-900 dark:text-slate-100">{patient.name}</h3>
+                <p className="text-base text-slate-500 mt-1">{patient.age} years old · {patient.gender}</p>
+                <p className="text-base text-slate-500 flex items-center gap-1.5 mt-0.5">
+                  <MapPin className="w-4 h-4 text-brand-400" /> {patient.location.city}, {patient.location.state}
                 </p>
               </div>
             </div>
-          ))}
-          {chatLoading && (
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-brand-500 to-teal-400 flex items-center justify-center text-white shrink-0">
-                <Bot className="w-3.5 h-3.5" />
+
+            {patient.conditions.length > 0 && (
+              <div>
+                <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-2">My Conditions</p>
+                <div className="flex flex-wrap gap-2">{patient.conditions.map(c => <ConditionPill key={c} color="teal">{c}</ConditionPill>)}</div>
               </div>
-              <div className="chat-bubble-ai px-4 py-3">
-                <div className="flex gap-1 items-center">
-                  <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-2 h-2 bg-brand-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                </div>
-              </div>
+            )}
+
+            <div className="bg-slate-50 dark:bg-slate-700/50 rounded-xl p-4 border-2 border-slate-100 dark:border-slate-600">
+              <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+                <PhoneCall className="w-4 h-4" /> Emergency Contact
+              </p>
+              <p className="text-lg font-bold text-slate-800 dark:text-slate-200">{patient.caregiver.name}</p>
+              <p className="text-base text-slate-500 mt-0.5">{patient.caregiver.relationship}</p>
+              <a href={`tel:${patient.caregiver.phone}`}
+                className="mt-2 inline-flex items-center gap-2 text-base text-brand-600 dark:text-brand-400 font-semibold">
+                <Phone className="w-4 h-4" /> {patient.caregiver.phone}
+              </a>
             </div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        {/* Input */}
-        <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-700 flex gap-2">
-          <input
-            ref={chatInputRef}
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleChat()}
-            placeholder={`Message AI companion for ${firstName}…`}
-            className="flex-1 border border-slate-200 dark:border-slate-600 rounded-xl px-4 py-2.5 text-sm text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-700 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 transition-all"
-            disabled={chatLoading}
-          />
-          <button onClick={() => handleChat()} disabled={chatLoading || !chatInput.trim()}
-            className="px-4 py-2.5 bg-brand-500 text-white rounded-xl font-medium text-sm hover:bg-brand-600 transition-colors disabled:opacity-50 flex items-center gap-2 shrink-0">
-            {chatLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          </button>
-        </div>
-      </div>
-
-      {/* ── VITALS HISTORY TABLE ─────────────────────────────────── */}
-      <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-700 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-brand-500" />
-          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Vitals History</h3>
-          <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">Last {historyRows.length} readings</span>
-        </div>
-        {historyRows.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="bg-slate-50 dark:bg-slate-700/50 border-b border-slate-100 dark:border-slate-700">
-                  {['Time', 'Heart Rate', 'Blood Pressure', 'SpO₂', 'Sleep', 'Movement', 'Temp'].map((h) => (
-                    <th key={h} className="px-4 py-3 text-left text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider text-[10px]">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {historyRows.map((r, idx) => (
-                  <tr key={r.id} className={`border-b border-slate-50 dark:border-slate-700/50 hover:bg-brand-50/30 dark:hover:bg-brand-900/10 transition-colors ${idx % 2 === 0 ? 'bg-white dark:bg-slate-800' : 'bg-slate-50/50 dark:bg-slate-700/20'}`}>
-                    <td className="px-4 py-3 text-slate-500 dark:text-slate-400 whitespace-nowrap">{format(new Date(r.timestamp), 'MMM d, HH:mm')}</td>
-                    <td className={`px-4 py-3 font-semibold ${isAbnormalHR(r.heartRate)           ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>{r.heartRate} <span className="font-normal text-slate-400">bpm</span></td>
-                    <td className={`px-4 py-3 font-semibold ${isAbnormalBP(r.bloodPressure.systolic) ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>{r.bloodPressure.systolic}/{r.bloodPressure.diastolic} <span className="font-normal text-slate-400">mmHg</span></td>
-                    <td className={`px-4 py-3 font-semibold ${isAbnormalO2(r.oxygenSaturation)    ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>{r.oxygenSaturation.toFixed(1)}<span className="font-normal text-slate-400">%</span></td>
-                    <td className={`px-4 py-3 font-semibold ${isAbnormalSleep(r.sleepHours)       ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>{r.sleepHours.toFixed(1)}<span className="font-normal text-slate-400">h</span></td>
-                    <td className="px-4 py-3 font-semibold text-slate-800 dark:text-slate-200">{r.movementScore.toFixed(0)}<span className="font-normal text-slate-400">/100</span></td>
-                    <td className={`px-4 py-3 font-semibold ${isAbnormalTemp(r.temperature)       ? 'text-red-600 dark:text-red-400' : 'text-slate-800 dark:text-slate-200'}`}>{r.temperature.toFixed(1)}<span className="font-normal text-slate-400">°C</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         ) : (
-          <div className="text-center py-10 text-slate-400 dark:text-slate-500 text-sm">No readings available</div>
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[
+                { label: 'Full Name', val: editName,  set: setEditName,  type: 'text'   },
+                { label: 'Age',       val: editAge,   set: setEditAge,   type: 'number' },
+                { label: 'City',      val: editCity,  set: setEditCity,  type: 'text'   },
+                { label: 'State',     val: editState, set: setEditState, type: 'text'   },
+              ].map(({ label, val, set, type }) => (
+                <div key={label}>
+                  <label className="text-sm font-bold text-slate-600 dark:text-slate-400 block mb-1.5">{label}</label>
+                  <input type={type} value={val} onChange={e => set(e.target.value)}
+                    className="w-full border-2 border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 text-base bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500" />
+                </div>
+              ))}
+              <div>
+                <label className="text-sm font-bold text-slate-600 dark:text-slate-400 block mb-1.5">Gender</label>
+                <select value={editGender} onChange={e => setEditGender(e.target.value)}
+                  className="w-full border-2 border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 text-base bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500">
+                  <option value="male">Male</option>
+                  <option value="female">Female</option>
+                </select>
+              </div>
+            </div>
+            <p className="text-sm font-bold text-slate-500 uppercase tracking-wider pt-2 border-t-2 border-slate-100 dark:border-slate-700">Emergency Contact</p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {[
+                { label: 'Name',         val: editCgName,  set: setEditCgName  },
+                { label: 'Phone',        val: editCgPhone, set: setEditCgPhone },
+                { label: 'Relationship', val: editCgRel,   set: setEditCgRel   },
+              ].map(({ label, val, set }) => (
+                <div key={label}>
+                  <label className="text-sm font-bold text-slate-600 dark:text-slate-400 block mb-1.5">{label}</label>
+                  <input value={val} onChange={e => set(e.target.value)}
+                    className="w-full border-2 border-slate-200 dark:border-slate-600 rounded-xl px-4 py-3 text-base bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-brand-500" />
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </div>
+
+      {/* ── QUICK LINKS ───────────────────────────────────────── */}
+      <div className="grid grid-cols-2 gap-4">
+        <Link href="/hospitals"
+          className="flex flex-col items-center gap-2 p-5 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 hover:border-brand-300 hover:bg-brand-50 dark:hover:bg-brand-900/20 active:scale-95 transition-all text-center">
+          <MapPin className="w-8 h-8 text-brand-500" />
+          <p className="text-base font-bold text-slate-700 dark:text-slate-300">Nearby Hospitals</p>
+        </Link>
+        <Link href="/medications"
+          className="flex flex-col items-center gap-2 p-5 rounded-2xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 hover:border-brand-300 hover:bg-brand-50 dark:hover:bg-brand-900/20 active:scale-95 transition-all text-center">
+          <Pill className="w-8 h-8 text-brand-500" />
+          <p className="text-base font-bold text-slate-700 dark:text-slate-300">Medications</p>
+        </Link>
+      </div>
+
     </div>
   );
 }

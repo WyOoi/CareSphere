@@ -4,6 +4,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { Pill, Check, X, AlertTriangle, TrendingUp, ChevronRight, RefreshCw, Plus, Clock, Users } from 'lucide-react';
 import { api, Patient, MedicationData } from '@/lib/api';
 
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.split(';').map(c => c.trim()).find(c => c.startsWith(name + '='));
+  return match ? decodeURIComponent(match.split('=')[1]) : null;
+}
+
 interface PatientAdherence {
   patient: Patient;
   adherence: { total: number; taken: number; rate: number };
@@ -11,13 +17,14 @@ interface PatientAdherence {
 }
 
 export default function MedicationsPage() {
+  const [patientMode, setPatientMode] = useState(false);
   const [overview, setOverview] = useState<PatientAdherence[]>([]);
   const [loadingOverview, setLoadingOverview] = useState(true);
   const [selected, setSelected] = useState<Patient | null>(null);
   const [medData, setMedData] = useState<MedicationData | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newMed, setNewMed] = useState({ name: '', dosage: '1 tablet', times: '08:00' });
+  const [newMed, setNewMed] = useState({ name: '', dosage: '1 tablet', times: ['08:00'] });
 
   const today = new Date().toISOString().split('T')[0];
 
@@ -25,6 +32,20 @@ export default function MedicationsPage() {
   const loadOverview = useCallback(async () => {
     setLoadingOverview(true);
     try {
+      const myId = readCookie('cs_patient_id');
+      if (myId) {
+        // Patient mode — fetch only own record, never the full patient list
+        setPatientMode(true);
+        const [me, data] = await Promise.all([
+          api.getPatient(myId),
+          api.getMedications(myId).catch(() => ({ medications: [], adherence: { total: 0, taken: 0, rate: 0 }, todayLogs: [] })),
+        ]);
+        setOverview([{ patient: me, adherence: data.adherence, medicationCount: data.medications.length }]);
+        setSelected(me);
+        setMedData(data);
+        setLoadingOverview(false);
+        return;
+      }
       const patients = await api.getPatients();
       // Only load for first 30 to avoid hammering the backend
       const sample = patients.slice(0, 30);
@@ -70,9 +91,9 @@ export default function MedicationsPage() {
     await api.addMedication(selected.id, {
       name: newMed.name,
       dosage: newMed.dosage,
-      times: newMed.times.split(',').map((t) => t.trim()),
+      times: newMed.times.filter(Boolean),
     });
-    setNewMed({ name: '', dosage: '1 tablet', times: '08:00' });
+    setNewMed({ name: '', dosage: '1 tablet', times: ['08:00'] });
     setShowAddForm(false);
     const data = await api.getMedications(selected.id);
     setMedData(data);
@@ -102,10 +123,12 @@ export default function MedicationsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
             <Pill className="w-6 h-6 text-brand-500" />
-            Medication Adherence
+            {patientMode ? 'My Medications' : 'Medication Adherence'}
           </h1>
           <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">
-            Monitor which patients are missing their medications — flag and act on poor adherence
+            {patientMode
+              ? 'Your daily medication schedule and today\'s dose log'
+              : 'Monitor which patients are missing their medications — flag and act on poor adherence'}
           </p>
         </div>
         <button onClick={loadOverview} className="p-2 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 transition-colors">
@@ -113,8 +136,8 @@ export default function MedicationsPage() {
         </button>
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-3 gap-4">
+      {/* Summary cards — admin only */}
+      {!patientMode && <div className="grid grid-cols-3 gap-4">
         {[
           { label: 'Poor Adherence',    value: criticalCount, sub: '< 60% — needs review', color: 'text-red-600',   bg: 'bg-red-50 dark:bg-red-900/20',    icon: AlertTriangle },
           { label: 'At Risk',           value: warningCount,  sub: '60–80% — monitor closely', color: 'text-amber-600', bg: 'bg-amber-50 dark:bg-amber-900/20', icon: Clock },
@@ -131,12 +154,12 @@ export default function MedicationsPage() {
             <p className="text-[11px] text-slate-400 mt-1">{sub}</p>
           </div>
         ))}
-      </div>
+      </div>}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-5">
 
-        {/* Patient adherence table */}
-        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
+        {/* Patient adherence table — admin only */}
+        {!patientMode && <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
             <h2 className="font-semibold text-slate-800 dark:text-slate-200 text-sm flex items-center gap-2">
               <Users className="w-4 h-4 text-brand-500" /> Patient Adherence Overview
@@ -199,7 +222,7 @@ export default function MedicationsPage() {
               })}
             </div>
           )}
-        </div>
+        </div>}
 
         {/* Patient detail panel */}
         <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-card overflow-hidden flex flex-col">
@@ -286,9 +309,37 @@ export default function MedicationsPage() {
                     <input type="text" placeholder="Dosage (e.g. 1 tablet)" value={newMed.dosage}
                       onChange={(e) => setNewMed({ ...newMed, dosage: e.target.value })}
                       className="w-full border border-slate-200 dark:border-slate-600 rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500" />
-                    <input type="text" placeholder="Times e.g. 08:00,20:00" value={newMed.times}
-                      onChange={(e) => setNewMed({ ...newMed, times: e.target.value })}
-                      className="w-full border border-slate-200 dark:border-slate-600 rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-brand-500" />
+                    <div className="space-y-1.5">
+                      <p className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Dose Times</p>
+                      {newMed.times.map((t, i) => (
+                        <div key={i} className="flex items-center gap-1.5">
+                          <input
+                            type="time"
+                            value={t}
+                            onChange={(e) => {
+                              const updated = [...newMed.times];
+                              updated[i] = e.target.value;
+                              setNewMed({ ...newMed, times: updated });
+                            }}
+                            className="flex-1 border border-slate-200 dark:border-slate-600 rounded-lg px-2.5 py-1.5 text-xs bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                          />
+                          {newMed.times.length > 1 && (
+                            <button
+                              onClick={() => setNewMed({ ...newMed, times: newMed.times.filter((_, j) => j !== i) })}
+                              className="text-red-400 hover:text-red-600 p-1">
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {newMed.times.length < 4 && (
+                        <button
+                          onClick={() => setNewMed({ ...newMed, times: [...newMed.times, '12:00'] })}
+                          className="text-[10px] text-brand-600 hover:underline flex items-center gap-1">
+                          <Plus className="w-3 h-3" /> Add another time
+                        </button>
+                      )}
+                    </div>
                     <div className="flex gap-2">
                       <button onClick={handleAddMed} className="flex-1 py-1.5 bg-brand-600 text-white text-xs rounded-lg font-medium hover:bg-brand-700 transition-colors">Save</button>
                       <button onClick={() => setShowAddForm(false)} className="flex-1 py-1.5 border border-slate-200 dark:border-slate-600 text-slate-500 text-xs rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors">Cancel</button>

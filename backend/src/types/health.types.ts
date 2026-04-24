@@ -19,6 +19,12 @@ export interface Patient {
     lng: number;
   };
   createdAt: string;
+  // Gamification
+  carePoints?: number;
+  streakDays?: number;
+  level?: number;
+  // Social
+  nudges?: Array<{ type: 'heart' | 'highfive' | 'support'; sender: string; timestamp: string }>;
 }
 
 export interface HealthReading {
@@ -76,6 +82,8 @@ export interface Hospital {
   distance: string;
   type: string;
   emergencyAvailable: boolean;
+  lat?: number;
+  lng?: number;
 }
 
 export interface AlertRecord {

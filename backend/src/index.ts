@@ -7,9 +7,12 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import './config/firebaseWeb';
 import { errorHandler, notFound } from './middleware/errorHandler';
 import healthRoutes from './routes/healthRoutes';
 import companionRoutes from './routes/companionRoutes';
+import deviceRoutes from './routes/deviceRoutes';
+import authRoutes from './routes/authRoutes';
 import { seedDemoData } from './rag/healthMemoryService';
 
 const app = express();
@@ -63,12 +66,18 @@ app.get('/', (_req, res) => {
       dashboard: 'GET /api/health/dashboard/stats',
       chat: 'POST /api/companion/chat',
       checkin: 'POST /api/companion/daily-checkin/:id',
+      devices: 'GET /api/devices',
+      deviceReading: 'POST /api/devices/:deviceId/reading',
+      signup: 'POST /api/auth/signup',
+      login: 'POST /api/auth/login',
     },
   });
 });
 
 app.use('/api/health', healthRoutes);
 app.use('/api/companion', companionRoutes);
+app.use('/api/devices', deviceRoutes);
+app.use('/api/auth', authRoutes);
 
 app.use(notFound);
 app.use(errorHandler);

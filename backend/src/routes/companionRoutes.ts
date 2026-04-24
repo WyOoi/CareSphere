@@ -6,18 +6,19 @@ const router = Router();
 
 router.post('/chat', async (req: Request, res: Response) => {
   try {
-    const { patientId, message, sessionType, language } = req.body as {
+    const { patientId, message, sessionType, language, callerType } = req.body as {
       patientId: string;
       message: string;
       sessionType?: 'daily_checkin' | 'medication_reminder' | 'general' | 'emotional_support';
       language?: 'en' | 'bm';
+      callerType?: 'patient' | 'doctor';
     };
 
     if (!patientId || !message) {
       return res.status(400).json({ success: false, error: 'patientId and message are required' });
     }
 
-    const result = await runCompanionChat(patientId, message, sessionType || 'general', language || 'en');
+    const result = await runCompanionChat(patientId, message, sessionType || 'general', language || 'en', callerType || 'doctor');
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('[POST /companion/chat] Error:', err);
@@ -48,7 +49,7 @@ router.post('/daily-checkin/:patientId', async (req: Request, res: Response) => 
       ? `${timeGreeting} ${firstName}! Ini masa untuk pemeriksaan harian anda.`
       : `${timeGreeting} ${firstName}! Time for your daily check-in.`;
 
-    const result = await runCompanionChat(patientId, initMessage, 'daily_checkin', language);
+    const result = await runCompanionChat(patientId, initMessage, 'daily_checkin', language, 'patient');
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
@@ -67,7 +68,7 @@ router.post('/medication-reminder/:patientId', async (req: Request, res: Respons
       ? `Sudah tiba masa untuk minum ubat.`
       : `It's time to take your medication.`;
 
-    const result = await runCompanionChat(patientId, initMessage, 'medication_reminder', language);
+    const result = await runCompanionChat(patientId, initMessage, 'medication_reminder', language, 'patient');
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });

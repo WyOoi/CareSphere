@@ -5,7 +5,7 @@ import {
   ResponsiveContainer, PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import type { RiskAssessment } from '@/lib/api';
-import { format } from 'date-fns';
+import { format, isValid } from 'date-fns';
 import { TrendingUp } from 'lucide-react';
 
 interface RiskChartProps {
@@ -13,15 +13,48 @@ interface RiskChartProps {
   stats: { highRiskCount: number; mediumRiskCount: number; lowRiskCount: number };
 }
 
+function normalizeTimestamp(value: unknown): Date | null {
+  if (!value) return null;
+  if (value instanceof Date) return isValid(value) ? value : null;
+
+  if (typeof value === 'string' || typeof value === 'number') {
+    const parsed = new Date(value);
+    return isValid(parsed) ? parsed : null;
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const withToDate = value as { toDate?: () => Date };
+    if (typeof withToDate.toDate === 'function') {
+      const parsed = withToDate.toDate();
+      return isValid(parsed) ? parsed : null;
+    }
+
+    const ts = value as { _seconds?: number; seconds?: number; _nanoseconds?: number; nanoseconds?: number };
+    const seconds = ts._seconds ?? ts.seconds;
+    const nanos = ts._nanoseconds ?? ts.nanoseconds ?? 0;
+    if (typeof seconds === 'number') {
+      const parsed = new Date(seconds * 1000 + Math.floor(nanos / 1e6));
+      return isValid(parsed) ? parsed : null;
+    }
+  }
+
+  return null;
+}
+
 export default function RiskChart({ assessments, stats }: RiskChartProps) {
   const timelineData = assessments
     .slice(0, 24)
     .reverse()
-    .map((a) => ({
-      time:  format(new Date(a.timestamp), 'HH:mm'),
-      score: a.riskScore,
-      level: a.riskLevel,
-    }));
+    .map((a) => {
+      const ts = normalizeTimestamp(a.timestamp);
+      if (!ts) return null;
+      return {
+        time: format(ts, 'HH:mm'),
+        score: a.riskScore,
+        level: a.riskLevel,
+      };
+    })
+    .filter((item): item is { time: string; score: number; level: string } => item !== null);
 
   const pieData = [
     { name: 'High Risk',   value: stats.highRiskCount,   color: '#DC2626' },
